@@ -165,54 +165,50 @@ function splitParagraphs(text){
   const cleaned=String(text||'').replace(/\r/g,'').trim();
   if(!cleaned) return [];
   const blocks=cleaned.split(/\n\s*\n+/).map(x=>x.replace(/\s+/g,' ').trim()).filter(Boolean);
-  if(blocks.length>1) return blocks;
-  const lines=cleaned.split(/\n+/).map(x=>x.replace(/\s+/g,' ').trim()).filter(Boolean);
+  if(blocks.length>1) return blocks.map((text,i)=>({id:`OCR-${i+1}`,title:`Detected Paragraph ${i+1}`,text}));
+  const lines=cleaned.split(/\n+/).map(x=>x.replace(/^[•·▪◦-]\s*/,'').replace(/\s+/g,' ').trim()).filter(Boolean);
   const out=[]; let cur='';
   for(const line of lines){
-    const looksHeading=/^(?:chapter|अध्याय|पाठ|exercise|प्रश्न|question|q\.?\s*\d+|answer|उत्तर)/i.test(line);
-    const looksNewParagraph=/^(?:[A-ZА-Я][^.!?]{0,90}:|[0-9]+[.)]\s+)/.test(line);
-    if(cur && (looksHeading||looksNewParagraph)){out.push(cur);cur='';}
+    const heading=/^(?:chapter|chapter\s+no|unit|lesson|exercise|question|q\.?\s*\d+|अध्याय|पाठ|इकाई|अभ्यास|प्रश्न)/i.test(line);
+    if(cur && heading){out.push(cur.trim());cur='';}
     cur=cur?`${cur} ${line}`:line;
-    if(/[.!?।॥]$/.test(line) && cur.length>140){out.push(cur);cur='';}
+    const sentenceEnd=/[.!?।॥:]$/.test(line);
+    if(sentenceEnd && cur.length>=80){out.push(cur.trim());cur='';}
   }
-  if(cur) out.push(cur);
-  return out;
+  if(cur.trim()) out.push(cur.trim());
+  const final=out.length?out:[cleaned];
+  return final.map((text,i)=>({id:`OCR-${i+1}`,title:`Detected Paragraph ${i+1}`,text}));
 }
 function chapterFromOCR(text, fallback=''){
-  const lines=String(text||'').split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
-  const m=String(text||'').match(/(?:chapter|अध्याय|पाठ)\s*(?:no\.?\s*)?(\d{1,3})/i);
-  const titleLine=lines.find(x=>/(?:chapter|अध्याय|पाठ)\s*(?:no\.?\s*)?\d{1,3}/i.test(x));
-  if(m) return {number:Number(m[1]),title:titleLine||`Chapter ${m[1]}`,confidence:'Detected from OCR heading'};
-  // If OCR does not include a numbered chapter heading, keep the first short heading as a reviewable candidate.
-  const candidate=lines.find(x=>x.length>=3&&x.length<=90&&!/[.!?।॥]$/.test(x)&&!/^page\s+\d+/i.test(x));
-  if(candidate) return {title:candidate,confidence:'Detected possible chapter heading — review required'};
+  const raw=String(text||'');
+  const lines=raw.split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
+  const patterns=[
+    /(?:chapter|अध्याय|पाठ|lesson|unit|इकाई)\s*(?:no\.?|number|क्रमांक)?\s*[:.\-#]?\s*(\d{1,3})/i,
+    /(?:chapter|अध्याय|पाठ|lesson|unit|इकाई)\s*[:.\-]?\s*(?:([0-9]{1,3})|([०-९]{1,3}))/i
+  ];
+  for(const re of patterns){
+    const m=raw.match(re); if(m){
+      const n=Number(m[1] || String(m[2]||'').replace(/[०-९]/g,d=>'०१२३४५६७८९'.indexOf(d)));
+      const titleLine=lines.find(x=>re.test(x));
+      return {number:Number.isFinite(n)&&n>0?n:undefined,title:titleLine||`${fallback||'Chapter'} ${n||''}`.trim(),confidence:'Detected from OCR heading'};
+    }
+  }
+  const heading=lines.slice(0,8).find(x=>/^(?:chapter|अध्याय|पाठ|lesson|unit|इकाई)\b/i.test(x));
+  if(heading) return {title:heading,confidence:'Detected from OCR heading'};
   return {title:fallback||'Selected chapter',confidence:'No chapter heading detected — review required'};
 }
-function resolveOcrLanguage(requested){
-  const aliases={Devanagari:'hin','Hindi':'hin','Hindi+English':'hin+eng','English':'eng'};
-  let want=aliases[String(requested||'')]||String(requested||'eng');
-  if(!/^[A-Za-z0-9_+,-]{2,80}$/.test(want))want='eng';
-  let installed='';
-  try{installed=execFileSync('tesseract',['--list-langs'],{timeout:5000}).toString('utf8')}catch{}
-  const has=(code)=>installed.split(/\r?\n/).includes(code);
-  const parts=want.split('+');
-  if(parts.every(has))return want;
-  if(has('hin')&&has('eng')&&(want.includes('hin')||want.includes('Hindi')))return 'hin+eng';
-  if(has('hin')&&want.includes('hin'))return 'hin';
-  return has('eng')?'eng':'osd';
-}
 async function runOCR(raw,mime,lang){
-  const safeLang=resolveOcrLanguage(lang);
+  const requested=String(lang||'eng').replace(/^Devanagari$/i,'hin+eng'); let installed='eng'; try{installed=execFileSync('tesseract',['--list-langs'],{timeout:10000}).toString('utf8')}catch{} const safeLang=(/hin/i.test(requested)&&/\bhin\b/.test(installed))?'hin+eng':'eng';
   const work=fs.mkdtempSync(path.join(os.tmpdir(),'easyway-ocr-'));
   const input=path.join(work,mime==='application/pdf'?'page.pdf':'page');
   try{
     fs.writeFileSync(input,raw); let image=input;
     if(mime==='application/pdf'){
       const prefix=path.join(work,'render');
-      execFileSync('pdftoppm',['-f','1','-singlefile','-png','-r','220',input,prefix],{timeout:30000});
+      execFileSync('pdftoppm',['-f','1','-singlefile','-png','-r','180',input,prefix],{timeout:20000});
       image=prefix+'.png';
     }
-    const out=execFileSync('tesseract',[image,'stdout','-l',safeLang,'--psm','6'],{timeout:45000,maxBuffer:4_000_000}).toString('utf8').trim();
+    const out=execFileSync('tesseract',[image,'stdout','-l',safeLang,'--psm','6'],{timeout:30000,maxBuffer:2_000_000}).toString('utf8').trim();
     return {text:out,paragraphs:splitParagraphs(out),chapterDetection:chapterFromOCR(out)};
   } finally { try{fs.rmSync(work,{recursive:true,force:true})}catch{} }
 }
