@@ -100,7 +100,7 @@ function securityHeaders(res) {
   res.setHeader('cross-origin-opener-policy','same-origin');
   res.setHeader('cross-origin-resource-policy','same-origin');
   res.setHeader('permissions-policy','camera=(self), microphone=(self), geolocation=()');
-  res.setHeader('content-security-policy', "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'");
+  res.setHeader('content-security-policy', "default-src 'self'; script-src 'self'; script-src-attr 'unsafe-inline'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'");
   if (process.env.NODE_ENV === 'production') res.setHeader('strict-transport-security','max-age=31536000; includeSubDomains');
 }
 function json(res, status, body) {
