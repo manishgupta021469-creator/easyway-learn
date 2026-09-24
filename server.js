@@ -164,53 +164,67 @@ function serveStatic(req,res) {
 function splitParagraphs(text){
   const cleaned=String(text||'').replace(/\r/g,'').trim();
   if(!cleaned) return [];
-  const blocks=cleaned.split(/\n\s*\n+/).map(x=>x.replace(/\s+/g,' ').trim()).filter(Boolean);
-  if(blocks.length>1) return blocks.map((text,i)=>({id:`OCR-${i+1}`,title:`Detected Paragraph ${i+1}`,text}));
-  const lines=cleaned.split(/\n+/).map(x=>x.replace(/^[•·▪◦-]\s*/,'').replace(/\s+/g,' ').trim()).filter(Boolean);
+  const lines=cleaned.split(/\n+/).map(x=>x.replace(/[\t ]+/g,' ').trim()).filter(Boolean);
+  const heading=/^(?:(?:chapter|unit|lesson|exercise|chapter\s*no\.?|lesson\s*no\.?|अध्याय|पाठ|इकाई|अध्याय\s*क्रमांक|प्रश्न|question|q\.?)[\s.:#-]*\d{0,3}\b)/i;
+  const numbered=/^(?:\d{1,3}[.)]|[A-Za-z][.)])\s+/;
   const out=[]; let cur='';
+  const flush=()=>{const v=cur.replace(/\s+/g,' ').trim();if(v)out.push(v);cur=''};
   for(const line of lines){
-    const heading=/^(?:chapter|chapter\s+no|unit|lesson|exercise|question|q\.?\s*\d+|अध्याय|पाठ|इकाई|अभ्यास|प्रश्न)/i.test(line);
-    if(cur && heading){out.push(cur.trim());cur='';}
+    if(heading.test(line)||numbered.test(line)) flush();
     cur=cur?`${cur} ${line}`:line;
-    const sentenceEnd=/[.!?।॥:]$/.test(line);
-    if(sentenceEnd && cur.length>=80){out.push(cur.trim());cur='';}
+    if(/[.!?।॥]$/.test(line) && cur.length>=140) flush();
   }
-  if(cur.trim()) out.push(cur.trim());
-  const final=out.length?out:[cleaned];
-  return final.map((text,i)=>({id:`OCR-${i+1}`,title:`Detected Paragraph ${i+1}`,text}));
+  flush();
+  // If OCR produced one giant block, split at sentence boundaries so paragraphs are selectable.
+  if(out.length===1 && out[0].length>260){
+    const parts=out[0].split(/(?<=[.!?।॥])\s+(?=[A-ZА-Яअ-ह0-9])/u).map(x=>x.trim()).filter(Boolean);
+    if(parts.length>1)return parts;
+  }
+  return out;
 }
 function chapterFromOCR(text, fallback=''){
-  const raw=String(text||'');
-  const lines=raw.split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
-  const patterns=[
-    /(?:chapter|अध्याय|पाठ|lesson|unit|इकाई)\s*(?:no\.?|number|क्रमांक)?\s*[:.\-#]?\s*(\d{1,3})/i,
-    /(?:chapter|अध्याय|पाठ|lesson|unit|इकाई)\s*[:.\-]?\s*(?:([0-9]{1,3})|([०-९]{1,3}))/i
-  ];
-  for(const re of patterns){
-    const m=raw.match(re); if(m){
-      const n=Number(m[1] || String(m[2]||'').replace(/[०-९]/g,d=>'०१२३४५६७८९'.indexOf(d)));
-      const titleLine=lines.find(x=>re.test(x));
-      return {number:Number.isFinite(n)&&n>0?n:undefined,title:titleLine||`${fallback||'Chapter'} ${n||''}`.trim(),confidence:'Detected from OCR heading'};
-    }
+  const lines=String(text||'').split(/\r?\n/).map(x=>x.replace(/\s+/g,' ').trim()).filter(Boolean);
+  const re=/(?:chapter|unit|lesson|अध्याय|पाठ|इकाई)(?:\s*(?:no\.?|number|क्रमांक))?\s*[.:#-]?\s*(\d{1,3})?/i;
+  const line=lines.find(x=>re.test(x));
+  if(line){
+    const m=line.match(re); const num=m&&m[1]?Number(m[1]):undefined;
+    return {number:num,title:line.slice(0,120),confidence:'Detected from OCR heading'};
   }
-  const heading=lines.slice(0,8).find(x=>/^(?:chapter|अध्याय|पाठ|lesson|unit|इकाई)\b/i.test(x));
-  if(heading) return {title:heading,confidence:'Detected from OCR heading'};
-  return {title:fallback||'Selected chapter',confidence:'No chapter heading detected — review required'};
+  return {title:fallback||'Selected chapter',confidence:'No chapter heading detected — selected chapter retained'};
+}
+function normalizeOCRLanguage(lang){
+  const raw=String(lang||'eng').toLowerCase().trim().replace(/\s+/g,'');
+  if(raw==='devanagari'||raw==='hindi'||raw==='hi'||raw==='hi-in')return 'hin';
+  if(raw==='english'||raw==='en'||raw==='en-in')return 'eng';
+  const parts=raw.split(/[+,]/).map(x=>x==='devanagari'||x==='hindi'||x==='hi'||x==='hi-in'?'hin':(x==='english'||x==='en'||x==='en-in'?'eng':x)).filter(x=>/^[a-z0-9_]+$/.test(x));
+  return parts.length?Array.from(new Set(parts)).join('+'):'eng';
+}
+function installedTesseractLanguages(){
+  try{return execFileSync('tesseract',['--list-langs'],{timeout:5000}).toString('utf8').split(/\r?\n/).map(x=>x.trim()).filter(Boolean)}catch{return []}
 }
 async function runOCR(raw,mime,lang){
-  const requested=String(lang||'eng').replace(/^Devanagari$/i,'hin+eng'); let installed='eng'; try{installed=execFileSync('tesseract',['--list-langs'],{timeout:10000}).toString('utf8')}catch{} const safeLang=(/hin/i.test(requested)&&/\bhin\b/.test(installed))?'hin+eng':'eng';
+  let safeLang=normalizeOCRLanguage(lang);
+  const available=installedTesseractLanguages();
+  const requested=safeLang.split('+').filter(Boolean);
+  const usable=requested.filter(x=>available.includes(x));
+  safeLang=usable.length?usable.join('+'):(available.includes('eng')?'eng':(available[0]||'eng'));
   const work=fs.mkdtempSync(path.join(os.tmpdir(),'easyway-ocr-'));
   const input=path.join(work,mime==='application/pdf'?'page.pdf':'page');
   try{
-    fs.writeFileSync(input,raw); let image=input;
+    fs.writeFileSync(input,raw); let images=[];
     if(mime==='application/pdf'){
-      const prefix=path.join(work,'render');
-      execFileSync('pdftoppm',['-f','1','-singlefile','-png','-r','180',input,prefix],{timeout:20000});
-      image=prefix+'.png';
+      const prefix=path.join(work,'page');
+      execFileSync('pdftoppm',['-png','-r','220',input,prefix],{timeout:60000});
+      images=fs.readdirSync(work).filter(x=>/^page-\d+\.png$/.test(x)).sort((a,b)=>Number(a.match(/\d+/)[0])-Number(b.match(/\d+/)[0])).map(x=>path.join(work,x));
+    }else images=[input];
+    let textParts=[];
+    for(const image of images){
+      const out=execFileSync('tesseract',[image,'stdout','-l',safeLang,'--psm','6'],{timeout:45000,maxBuffer:4_000_000}).toString('utf8').trim();
+      if(out)textParts.push(out);
     }
-    const out=execFileSync('tesseract',[image,'stdout','-l',safeLang,'--psm','6'],{timeout:30000,maxBuffer:2_000_000}).toString('utf8').trim();
-    return {text:out,paragraphs:splitParagraphs(out),chapterDetection:chapterFromOCR(out)};
-  } finally { try{fs.rmSync(work,{recursive:true,force:true})}catch{} }
+    const text=textParts.join('\n\n').trim();
+    return {text,paragraphs:splitParagraphs(text).map((x,i)=>({id:`OCR-P-${i+1}`,title:`Detected Paragraph ${i+1}`,text:x})),chapterDetection:chapterFromOCR(text)};
+  } finally {try{fs.rmSync(work,{recursive:true,force:true})}catch{}}
 }
 
 function normalizeTokens(text){

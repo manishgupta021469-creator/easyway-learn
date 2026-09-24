@@ -1,0 +1,19 @@
+Easyway Learn - OCR + Speech continuity fix
+
+1. Replace app.js with this app.js.
+2. Replace server.js with this server.js.
+3. Replace the repository Dockerfile with this Dockerfile so the Render image contains Tesseract Hindi/English OCR and Poppler PDF support.
+4. Commit all three files together.
+
+Speech fix:
+- Speech recognition stays logically active through normal pauses/hesitation.
+- Mobile Chrome recognition onend/no-speech restarts automatically.
+- Final transcripts are accumulated instead of being overwritten by each recognition event.
+- Manual Stop still stops the microphone.
+
+OCR fix:
+- Uses valid Tesseract language codes eng+hin instead of the invalid Devanagari alias.
+- Server normalizes language aliases and uses only installed languages.
+- Paragraph detection handles blank lines, headings, numbered blocks and long OCR text.
+- Chapter heading detection supports Chapter/Unit/Lesson and Hindi equivalents.
+- PDFs are OCRed page-by-page instead of only the first page.

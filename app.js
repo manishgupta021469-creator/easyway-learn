@@ -270,7 +270,7 @@
     return speakingView(p,pr);
   }
   function qualificationView(p,pr){
-    return layout(`<div class="breadcrumb">${esc(findChapter().title)} → ${esc(p.title)}</div><div class="row between wrap"><div><div class="eyebrow">STEP 1 • QUALIFICATION READING</div><h1 class="title">${esc(p.title)}</h1><div class="subtitle">One qualification reading. Speaking unlocks when accuracy reaches 80% or higher.</div></div><span class="pill amber">${pr.readings} previous qualification attempt${pr.readings===1?'':'s'}</span></div><div class="card" style="margin-top:16px"><div class="paragraph">${esc(p.text)}</div><div class="grid g2" style="margin-top:16px"><div class="card" style="box-shadow:none"><div class="eyebrow">READ ALOUD</div><div class="meter" style="--val:${state.readerAccuracy}%"><strong>${Math.round(state.readerAccuracy)}%</strong></div><div class="center small muted">Speech accuracy</div><div class="toolbar" style="justify-content:center;margin-top:10px"><button class="btn primary" onclick="toggleQualificationMic()">${state.speakingListening?'Stop Listening':'Start Reading Mic'}</button><button class="btn ghost" onclick="useTypedForQualification()">Use Typed Transcript</button></div></div><div class="card" style="box-shadow:none"><div class="field"><label>RECOGNIZED / TYPED SPEECH</label><textarea id="qualText" placeholder="Speak with the microphone, or paste/type your reading here.">${esc(state.readerTranscript)}</textarea></div><button class="btn secondary" onclick="calculateQualification()">Check Reading Accuracy</button><p class="small muted" style="margin-bottom:0">Normal accents and pauses can be tolerated; finger tracking is not required.</p></div></div>${antiCheatPanel(p.id)}${pr.qualified?'<div class="demo" style="margin-top:14px"><b>Already unlocked.</b> You can reread this paragraph without unlocking again. <button class="btn secondary" style="margin-top:8px" onclick="openLesson(\''+p.id+'\')">Back to Speaking Test</button></div>':(state.readerAccuracy>=80?'<div class="demo" style="margin-top:14px"><b>Qualified.</b> Your Speaking Test can now unlock.</div>':'<div class="demo" style="margin-top:14px">Below 80% keeps the Speaking Test locked. Practice and retry the qualification reading.</div>')}</div>`, [['dashboard','Home'],['library','My Learning'],['history','History'],['progress','Progress'],['rankings','Ranking'],['shares','Shared'],['profile','Profile'],['support','Help & Support']]);
+    return layout(`<div class="breadcrumb">${esc(findChapter().title)} → ${esc(p.title)}</div><div class="row between wrap"><div><div class="eyebrow">STEP 1 • QUALIFICATION READING</div><h1 class="title">${esc(p.title)}</h1><div class="subtitle">One qualification reading. Speaking unlocks when accuracy reaches 80% or higher.</div></div><span class="pill amber">${pr.readings} previous qualification attempt${pr.readings===1?'':'s'}</span></div><div class="card" style="margin-top:16px"><div class="paragraph">${esc(p.text)}</div><div class="grid g2" style="margin-top:16px"><div class="card" style="box-shadow:none"><div class="eyebrow">READ ALOUD</div><div class="meter" style="--val:${state.readerAccuracy}%"><strong>${Math.round(state.readerAccuracy)}%</strong></div><div class="center small muted">Speech accuracy</div><div class="toolbar" style="justify-content:center;margin-top:10px"><button class="btn primary" onclick="toggleQualificationMic()">${state.speakingListening?'Stop Listening':'Start Reading Mic'}</button><button class="btn ghost" onclick="useTypedForQualification()">Use Typed Transcript</button></div></div><div class="card" style="box-shadow:none"><div class="field"><label>RECOGNIZED / TYPED SPEECH</label><textarea id="qualText" placeholder="Speak with the microphone, or paste/type your reading here.">${esc(state.readerTranscript)}</textarea></div><button class="btn secondary" onclick="calculateQualification()">Check Reading Accuracy</button><p class="small muted" style="margin-bottom:0">Normal accents and pauses can be tolerated; finger tracking is not required.</p></div></div>${antiCheatPanel(p.id)}${state.readerAccuracy>=80?'<div class="demo" style="margin-top:14px"><b>Qualified.</b> Your Speaking Test can now unlock.</div>':'<div class="demo" style="margin-top:14px">Below 80% keeps the Speaking Test locked. Practice and retry the qualification reading.</div>'}</div>`, [['dashboard','Home'],['library','My Learning'],['history','History'],['progress','Progress'],['rankings','Ranking'],['shares','Shared'],['profile','Profile'],['support','Help & Support']]);
   }
   async function calculateQualification(){const p=findParagraph();const t=(document.getElementById('qualText')?.value||'').trim();if(!t){toast('Enter or speak the paragraph first');return}state.readerTranscript=t;let score=wordAccuracy(p.text,t);try{const a=await serverAssessment('Qualification',p.id,t);score=a.score}catch{}state.readerAccuracy=score;if(state.readerAccuracy>=80){const pr=getProg(p.id);pr.readings+=1;pr.qualified=true;setProg(p.id,pr);addAudit('Qualification Unlocked',p.id,`${Math.round(state.readerAccuracy)}%`);state.readerMode='speaking';toast('80% reached — Speaking Test unlocked');}else{const pr=getProg(p.id);pr.readings+=1;setProg(p.id,pr);toast(`Reading accuracy ${Math.round(state.readerAccuracy)}% — retry`)}render()}
   function useTypedForQualification(){calculateQualification()}
@@ -335,7 +335,7 @@
       try{
         const payload=[];
         for(const file of files){const data=await blobToDataUrl(file);payload.push({name:file.name,mime:file.type,data:String(data).split(',')[1]||''})}
-        const r=await apiFetch('/ocr-batch',{method:'POST',body:JSON.stringify({items:payload,lang:/hi|hin|hindi/i.test(navigator.language||'')?'hin+eng':'eng'})});
+        const r=await apiFetch('/ocr-batch',{method:'POST',body:JSON.stringify({items:payload,lang:'eng+hin'})});
         for(const result of (r.results||[])){
           const file=files[result.index]; const det=result.ok&&result.chapterDetection?.confidence==='Detected from OCR heading'?{title:result.chapterDetection.title,order:result.chapterDetection.number,confidence:result.chapterDetection.confidence}:detectChapterFromFilename(file?.name,fallback);
           const paragraphs=result.ok?(result.paragraphs||[]):[]; const rawText=result.ok?(result.text||''):`OCR could not be completed automatically. Review this page and enter/correct the extracted text.`;
@@ -350,7 +350,7 @@
       for(let i=items.length;i<files.length;i++){
         const file=files[i]; let rawText=''; let det=detectChapterFromFilename(file?.name,fallback); let ocr='manual review';
         if(API_BASE&&serverToken()){
-          try{const data=await blobToDataUrl(file);const r=await apiFetch('/ocr',{method:'POST',body:JSON.stringify({mime:file.type,data:String(data).split(',')[1]||'',lang:/hi|hin|hindi/i.test(navigator.language||'')?'hin+eng':'eng'})});rawText=r.text||'';if(r.chapterDetection?.title&&r.chapterDetection.confidence==='Detected from OCR heading')det={title:r.chapterDetection.title,order:r.chapterDetection.number,confidence:r.chapterDetection.confidence};items.push({name:file.name,text:rawText,paragraphs:r.paragraphs||[],detected:det,file,ocr:'server OCR'});continue}catch(e){}
+          try{const data=await blobToDataUrl(file);const r=await apiFetch('/ocr',{method:'POST',body:JSON.stringify({mime:file.type,data:String(data).split(',')[1]||'',lang:'eng+hin'})});rawText=r.text||'';if(r.chapterDetection?.title&&r.chapterDetection.confidence==='Detected from OCR heading')det={title:r.chapterDetection.title,order:r.chapterDetection.number,confidence:r.chapterDetection.confidence};items.push({name:file.name,text:rawText,paragraphs:r.paragraphs||[],detected:det,file,ocr:'server OCR'});continue}catch(e){}
         }
         items.push({name:file.name,text:`OCR could not be completed automatically. Review this page and enter/correct the extracted text.`,paragraphs:[],detected:det,file,ocr});
       }
@@ -513,14 +513,58 @@
   function startRecognition(mode){
     const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
     if(!SR){toast('Speech recognition is not supported in this browser. Use the text box fallback.');return}
-    const r=new SR();state.speakingLang=(findSubject().language==='Hindi'?'hi-IN':'en-IN');r.lang=state.speakingLang;r.interimResults=true;r.continuous=true;r.maxAlternatives=1;
-    state.speakingListening=true;state.recognition=r;
-    r.onresult=e=>{let finalText='';for(let i=e.resultIndex;i<e.results.length;i++){finalText+=e.results[i][0].transcript+' '}const text=finalText.trim();if(!text)return;if(mode==='qualification'){state.readerTranscript=text;state.readerAccuracy=wordAccuracy(findParagraph().text,text);const el=document.getElementById('qualText');if(el)el.value=text;}else if(mode==='speaking'){state.speakingTranscript=text;const el=document.getElementById('speechText');if(el)el.value=text;}else if(mode==='chapter'){const el=document.getElementById('chapterSpeech');if(el)el.value=text;state.chapterAnswers[findChapter().paragraphs[state.chapterIndex]?.id]=text;}else if(mode==='formula'){state.formulaTranscript=text;const el=document.getElementById('formulaSpeech');if(el)el.value=text;}else if(mode==='qa-qualification'){const el=document.getElementById('qaRead');if(el)el.value=text;}else if(mode==='qa-answer'){const el=document.getElementById('qaAnswer');if(el)el.value=text;}};
-    r.onerror=e=>{state.speakingListening=false;state.recognition=null;toast(`Mic error: ${e.error||'unknown'}`);render()};
-    r.onend=()=>{state.speakingListening=false;state.recognition=null;render()};
-    r.start();render();
+    stopRecognition(false);
+    const r=new SR();
+    state.speakingLang=(findSubject().language==='Hindi'?'hi-IN':'en-IN');
+    r.lang=state.speakingLang;
+    r.interimResults=true;
+    r.continuous=true;
+    r.maxAlternatives=1;
+    r._easywayMode=mode;
+    r._easywayManualStop=false;
+    r._easywayFinal='';
+    state.speakingListening=true;
+    state.recognition=r;
+    r.onresult=e=>{
+      let finalText=r._easywayFinal||'';
+      let interim='';
+      for(let i=e.resultIndex;i<e.results.length;i++){
+        const part=e.results[i][0]?.transcript||'';
+        if(e.results[i].isFinal) finalText+=(finalText?' ':'')+part.trim();
+        else interim+=(interim?' ':'')+part.trim();
+      }
+      r._easywayFinal=finalText.trim();
+      const text=(r._easywayFinal+(interim?' '+interim:'')).trim();
+      if(!text)return;
+      if(mode==='qualification'){state.readerTranscript=text;state.readerAccuracy=wordAccuracy(findParagraph().text,text);const el=document.getElementById('qualText');if(el)el.value=text;}
+      else if(mode==='speaking'){state.speakingTranscript=text;const el=document.getElementById('speechText');if(el)el.value=text;}
+      else if(mode==='chapter'){const el=document.getElementById('chapterSpeech');if(el)el.value=text;state.chapterAnswers[findChapter().paragraphs[state.chapterIndex]?.id]=text;}
+      else if(mode==='formula'){state.formulaTranscript=text;const el=document.getElementById('formulaSpeech');if(el)el.value=text;}
+      else if(mode==='qa-qualification'){const el=document.getElementById('qaRead');if(el)el.value=text;}
+      else if(mode==='qa-answer'){const el=document.getElementById('qaAnswer');if(el)el.value=text;}
+    };
+    r.onerror=e=>{
+      const recoverable=['no-speech','audio-capture','network','aborted'].includes(e.error);
+      if(recoverable && !r._easywayManualStop){setTimeout(()=>{if(state.recognition===r&&!r._easywayManualStop){try{r.start();state.speakingListening=true;render()}catch{}}},250);return}
+      if(state.recognition===r){state.speakingListening=false;state.recognition=null;toast(`Mic error: ${e.error||'unknown'}`);render()}
+    };
+    r.onend=()=>{
+      if(r._easywayManualStop || state.recognition!==r)return;
+      // Mobile Chrome can end recognition after a silence/pause even with continuous=true.
+      // Restart it without clearing the transcript so normal hesitation does not stop the test.
+      setTimeout(()=>{
+        if(state.recognition!==r||r._easywayManualStop)return;
+        try{r.start();state.speakingListening=true;render()}catch{}
+      },300);
+    };
+    try{r.start();render()}catch(e){state.speakingListening=false;state.recognition=null;toast('Microphone could not start')}
   }
-  function stopRecognition(){try{state.recognition?.stop()}catch{}state.speakingListening=false;state.recognition=null;render()}
+  function stopRecognition(shouldRender=true){
+    const r=state.recognition;
+    if(r){r._easywayManualStop=true;try{r.stop()}catch{}try{r.abort()}catch{}}
+    state.speakingListening=false;state.recognition=null;
+    if(shouldRender)render();
+  }
 
   async function usageTick(){if(!current()||document.visibilityState!=='visible'||!['dashboard','library','book','bookDetail','pageView','lesson','speaking','history','progress','rankings','shares','profile','support'].includes(state.page))return; db.usage.activeMinutes+=1; db.usage.sessions.unshift({studentId:state.currentId,start:new Date().toISOString(),minutes:1,context:state.page}); db.usage.sessions=db.usage.sessions.slice(0,1000); saveDb(); if(API_BASE&&serverToken()){try{const r=await apiFetch('/usage',{method:'POST',body:JSON.stringify({minutes:1,context:state.page})}); if(r.usage)db.usage=r.usage; saveDb()}catch{}}}
   setInterval(usageTick,60000);
@@ -556,7 +600,7 @@
     if(state.modal)document.body.insertAdjacentHTML('beforeend',editModal());
   }
   function go(p){stopRecognition();if(p!=='lesson'&&p!=='chapterTest')stopAntiCheat();state.sharedSnapshot=null;state.page=p;if(p!=='group'&&groupPollTimer){clearInterval(groupPollTimer);groupPollTimer=null}render()}
-  function rereadParagraph(){stopRecognition();state.readerMode='qualification';state.readerTranscript='';state.readerAccuracy=0;state.page='lesson';render()}
+  function rereadParagraph(){stopRecognition();state.readerMode='qualification';state.readerAccuracy=getProg(state.paragraphId).qualified?80:0;state.readerTranscript='';state.page='lesson';render()}
   function openLesson(id){stopRecognition();state.paragraphId=id;state.readerMode=getProg(id).qualified?'speaking':'qualification';state.readerAccuracy=getProg(id).qualified?80:0;state.readerTranscript='';state.speakingTranscript='';state.page='lesson';render()}
 
   window.go=go;window.sharedSnapshotView=sharedSnapshotView;window.loginSubmit=loginSubmit;window.logout=logout;window.openNewSubject=openNewSubject;window.openNewBook=openNewBook;window.createSubject=createSubject;window.createBook=createBook;window.deleteSubject=deleteSubject;window.deleteBook=deleteBook;window.openRegister=openRegister;window.openForgot=openForgot;window.closeModal=closeModal;window.registerStudent=registerStudent;window.resetPassword=resetPassword;window.openBook=openBook;window.openChapter=openChapter;window.viewPage=viewPage;window.savePageText=savePageText;window.deletePage=deletePage;window.deleteParagraph=deleteParagraph;window.deleteChapter=deleteChapter;window.editChapter=editChapter;window.editParagraph=editParagraph;window.saveChapterEdit=saveChapterEdit;window.saveParagraphEdit=saveParagraphEdit;window.openLesson=openLesson;window.rereadParagraph=rereadParagraph;window.calculateQualification=calculateQualification;window.useTypedForQualification=useTypedForQualification;window.toggleQualificationMic=toggleQualificationMic;window.toggleSpeakingMic=toggleSpeakingMic;window.submitSpeakingTest=submitSpeakingTest;window.resetSpeakingText=resetSpeakingText;window.startChapterTest=startChapterTest;window.toggleChapterMic=toggleChapterMic;window.checkChapterParagraph=checkChapterParagraph;window.openQA=openQA;window.qualifyQA=qualifyQA;window.submitQA=submitQA;window.toggleQAMic=toggleQAMic;window.openFormula=openFormula;window.submitFormula=submitFormula;window.toggleFormulaMic=toggleFormulaMic;window.processUpload=processUpload;window.confirmUpload=confirmUpload;window.shareContent=shareContent;window.sendShare=sendShare;window.acceptShare=acceptShare;window.rejectShare=rejectShare;window.openShared=openShared;window.saveProfile=saveProfile;window.downloadBackup=downloadBackup;window.importBackupFile=importBackupFile;window.restoreBackup=restoreBackup;window.changePassword=changePassword;window.submitFeedback=submitFeedback;window.loadFeedback=loadFeedback;window.rankings=rankings;window.setFilter=setFilter;window.createGroupSession=createGroupSession;window.joinGroupSession=joinGroupSession;window.refreshGroupSession=refreshGroupSession;window.submitGroupTurn=submitGroupTurn;window.groupMic=groupMic;window.endGroupSession=endGroupSession;window.startAntiCheat=startAntiCheat;window.stopAntiCheat=stopAntiCheat;window.captureAntiCheat=captureAntiCheat;
