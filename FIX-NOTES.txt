@@ -1,19 +1,19 @@
-Easyway Learn - OCR + Speech continuity fix
+Easyway Learn v56 Render build fix
 
-1. Replace app.js with this app.js.
-2. Replace server.js with this server.js.
-3. Replace the repository Dockerfile with this Dockerfile so the Render image contains Tesseract Hindi/English OCR and Poppler PDF support.
-4. Commit all three files together.
+This package keeps the v55 speech + OCR changes and fixes the Render Docker build failure.
 
-Speech fix:
-- Speech recognition stays logically active through normal pauses/hesitation.
-- Mobile Chrome recognition onend/no-speech restarts automatically.
-- Final transcripts are accumulated instead of being overwritten by each recognition event.
-- Manual Stop still stops the microphone.
+Root cause found in Render logs:
+- Docker build failed during apt-get install because the Dockerfile requested `fonts-deva-core`.
+- Debian Bookworm provides the Devanagari font meta-package as `fonts-deva`; the font is not required by the OCR pipeline anyway.
 
-OCR fix:
-- Uses valid Tesseract language codes eng+hin instead of the invalid Devanagari alias.
-- Server normalizes language aliases and uses only installed languages.
-- Paragraph detection handles blank lines, headings, numbered blocks and long OCR text.
-- Chapter heading detection supports Chapter/Unit/Lesson and Hindi equivalents.
-- PDFs are OCRed page-by-page instead of only the first page.
+v56 Dockerfile installs only the required OCR/PDF packages:
+- tesseract-ocr (includes English data)
+- tesseract-ocr-hin (Hindi data)
+- poppler-utils (PDF page rendering)
+
+Upload/replace these files at the repository root:
+- app.js
+- server.js
+- Dockerfile
+
+Then commit once. Render should auto-deploy.
