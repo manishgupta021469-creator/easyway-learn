@@ -475,8 +475,8 @@
   async function loadFeedback(){if(API_BASE&&serverToken()){try{const r=await apiFetch('/feedback');db.feedback=r.feedback||[];saveDb();toast('Feedback status refreshed');render();return}catch(e){toast(e.message||'Could not refresh reports');return}}toast('Feedback is currently stored locally');}
   async function submitFeedback(){const issue=document.getElementById('fbType')?.value||'';const comment=document.getElementById('fbText')?.value.trim()||'';if(!comment){toast('Please describe the problem');return}if(API_BASE&&serverToken()){try{const r=await apiFetch('/feedback',{method:'POST',body:JSON.stringify({issue,comment,targetId:state.paragraphId||state.chapterId||''})});db.audit.unshift({actor:state.currentId,action:'Feedback',target:state.chapterId,time:new Date().toISOString(),extra:`${issue}: ${comment}`});saveDb();db.feedback ||= []; db.feedback.unshift(r.feedback); db.feedback=db.feedback.slice(0,1000); saveDb(); toast(`Feedback submitted — ${r.feedback.status}`); document.getElementById('fbText').value=''; render(); return}catch(e){toast(e.message||'Feedback could not be submitted');return}}db.audit.unshift({actor:state.currentId,action:'Feedback',target:state.chapterId,time:new Date().toISOString(),extra:`${issue}: ${comment}`});saveDb();toast('Feedback saved locally; it will be submitted when server sync is available');document.getElementById('fbText').value='';}
 
-  function openNewSubject(){state.modal={type:'newSubject'};render()}
-  function openNewBook(subjectId){state.modal={type:'newBook',subjectId};render()}
+  function openNewSubject(){stopRecognition(false);state.modal={type:'newSubject'};render()}
+  function openNewBook(subjectId){stopRecognition(false);state.modal={type:'newBook',subjectId};render()}
   async function deleteSubject(id){
     const s=findSubjectBy(id); if(!s)return;
     if(!confirm(`Delete subject "${s.name}" and all of its books, chapters, pages and local page files from your own content? Accepted shared snapshots remain with recipients.`))return;
@@ -517,24 +517,31 @@
     const r=new SR();
     state.speakingLang=(findSubject().language==='Hindi'?'hi-IN':'en-IN');
     r.lang=state.speakingLang;
-    r.interimResults=true;
+    // Final-only recognition prevents Chrome from repeatedly writing interim text into the box.
+    r.interimResults=false;
     r.continuous=true;
     r.maxAlternatives=1;
     r._easywayMode=mode;
     r._easywayManualStop=false;
     r._easywayFinal='';
+    r._easywayLastFinalKey='';
+    r._easywayLastFinalAt=0;
     state.speakingListening=true;
     state.recognition=r;
     r.onresult=e=>{
-      let finalText=r._easywayFinal||'';
-      let interim='';
       for(let i=e.resultIndex;i<e.results.length;i++){
-        const part=e.results[i][0]?.transcript||'';
-        if(e.results[i].isFinal) finalText+=(finalText?' ':'')+part.trim();
-        else interim+=(interim?' ':'')+part.trim();
+        if(!e.results[i].isFinal) continue;
+        const part=(e.results[i][0]?.transcript||'').trim();
+        if(!part) continue;
+        const key=part.toLowerCase().replace(/[.,!?;:।॥]+/g,' ').replace(/\s+/g,' ').trim();
+        const now=Date.now();
+        // Mobile Chrome can resend the same final phrase around a pause/restart.
+        if(key===r._easywayLastFinalKey && now-r._easywayLastFinalAt<2500) continue;
+        r._easywayLastFinalKey=key;
+        r._easywayLastFinalAt=now;
+        r._easywayFinal=(r._easywayFinal?`${r._easywayFinal} `:'')+part;
       }
-      r._easywayFinal=finalText.trim();
-      const text=(r._easywayFinal+(interim?' '+interim:'')).trim();
+      const text=r._easywayFinal.trim();
       if(!text)return;
       if(mode==='qualification'){state.readerTranscript=text;state.readerAccuracy=wordAccuracy(findParagraph().text,text);const el=document.getElementById('qualText');if(el)el.value=text;}
       else if(mode==='speaking'){state.speakingTranscript=text;const el=document.getElementById('speechText');if(el)el.value=text;}
@@ -545,17 +552,20 @@
     };
     r.onerror=e=>{
       const recoverable=['no-speech','audio-capture','network','aborted'].includes(e.error);
-      if(recoverable && !r._easywayManualStop){setTimeout(()=>{if(state.recognition===r&&!r._easywayManualStop){try{r.start();state.speakingListening=true;render()}catch{}}},250);return}
+      if(recoverable && !r._easywayManualStop){
+        // Keep the current UI/input stable while Chrome recovers from a silence or transient error.
+        setTimeout(()=>{if(state.recognition===r&&!r._easywayManualStop){try{r.start();state.speakingListening=true}catch{}}},350);
+        return;
+      }
       if(state.recognition===r){state.speakingListening=false;state.recognition=null;toast(`Mic error: ${e.error||'unknown'}`);render()}
     };
     r.onend=()=>{
       if(r._easywayManualStop || state.recognition!==r)return;
-      // Mobile Chrome can end recognition after a silence/pause even with continuous=true.
-      // Restart it without clearing the transcript so normal hesitation does not stop the test.
+      // Do not call render() here: rerendering the page during recognition destroys focused inputs.
       setTimeout(()=>{
         if(state.recognition!==r||r._easywayManualStop)return;
-        try{r.start();state.speakingListening=true;render()}catch{}
-      },300);
+        try{r.start();state.speakingListening=true}catch{}
+      },350);
     };
     try{r.start();render()}catch(e){state.speakingListening=false;state.recognition=null;toast('Microphone could not start')}
   }
