@@ -1,4 +1,4 @@
-(() => {
+})();
   'use strict';
   const app = document.getElementById('app');
   const toastRoot = document.getElementById('toast-root');
