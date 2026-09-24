@@ -70,7 +70,7 @@
   let state = {
     currentId: localStorage.getItem('easywayCurrentStudent') || null,
     page: 'dashboard', subjectId: 'SCI', bookId: 'SCI6', chapterId: 'CH1', paragraphId: 'P1',
-    pageNumber: 1, speakingListening: false, speakingLang: 'en-IN', recognition: null,
+    pageNumber: 1, speakingListening: false, speakingLang: 'en-IN', recognition: null, recognitionMode:null, recognitionRestartTimer:null, recognitionRunId:0, recognitionBuffer:'',
     readerMode: 'qualification', readerTranscript: '', readerAccuracy: 0,
     speakingTranscript: '', speakingScore: 0, speakingRecognized: '',
     chapterIndex: 0, chapterAnswers: {}, qaIndex: 0, qaListening: false, formulaTranscript:'',
@@ -315,12 +315,14 @@
 
   function uploadView(){return layout(`<div class="eyebrow">CONTENT UPLOAD</div><h1 class="title">Build your own Subject / Book / Chapter</h1><div class="subtitle">Student has full authority over their own Subject, Book, Chapter, Page and Paragraph content in this final model.</div><div class="card" style="margin-top:16px"><div class="grid g2"><div class="field"><label>SUBJECT</label><select id="upSubject">${db.subjects.map(s=>`<option value="${s.id}">${esc(s.name)}</option>`).join('')}<option value="NEW">+ New Subject</option></select></div><div class="field"><label>BOOK</label><select id="upBook"></select></div><div class="field"><label>CHAPTER</label><select id="upChapter"></select></div><div class="field"><label>NEW CHAPTER NAME (optional)</label><input id="newChapter" placeholder="Detected automatically from heading when possible" /></div></div><div class="field"><label>PAGE PHOTOS / PDFS</label><input id="pageFiles" type="file" accept="image/*,.pdf" multiple /></div><div class="field"><label>EXTRACTED TEXT (DEMO FALLBACK / OCR REVIEW)</label><textarea id="upText" placeholder="For the demo, paste the page text here. Multi-page uploads can be reviewed and corrected before saving."></textarea></div><div class="demo"><b>Automatic chapter detection:</b> file names containing “chapter 2”, “ch2”, etc. are grouped into that chapter. Otherwise the selected chapter is used. Low-confidence cases stay editable for confirmation.</div><div class="toolbar" style="margin-top:12px"><button class="btn primary" onclick="processUpload()">Detect & Save Pages</button><button class="btn ghost" onclick="go('library')">Cancel</button></div></div>`, activeNav())}
   function refreshUploadOptions(){const sid=document.getElementById('upSubject')?.value;const s=findSubjectBy(sid);if(!s)return;const bs=document.getElementById('upBook');bs.innerHTML=s.books.map(b=>`<option value="${b.id}">${esc(b.title)}</option>`).join('');const b=s.books[0];document.getElementById('upChapter').innerHTML=b?.chapters.map(c=>`<option value="${c.id}">${esc(c.title)}</option>`).join('')||'<option value="">No chapter yet</option>';}
-  function detectChapterFromFilename(name, fallback){
-    const m=String(name||'').match(/chapter\s*[-_]?\s*(\d+)|\bch\s*[-_]?\s*(\d+)\b/i);
-    if(!m)return {title:fallback.title, confidence:'Selected chapter'};
-    const n=Number(m[1]||m[2]);
+  function detectChapterFromFilename(name, fallback, text=''){
+    const source=`${name||''}\n${text||''}`;
+    const m=source.match(/(?:chapter|अध्याय|पाठ)\s*(?:no\.?\s*)?(\d{1,3})/i)||source.match(/\bch\s*[-_]?\s*(\d+)\b/i);
+    const heading=String(text||'').split(/\r?\n/).map(x=>x.trim()).find(x=>/(?:chapter|अध्याय|पाठ)\s*(?:no\.?\s*)?\d{1,3}/i.test(x));
+    if(!m)return {title:fallback.title,order:fallback.order,confidence:'Selected chapter — review required'};
+    const n=Number(m[1]);
     const existing=findBook().chapters.find(c=>c.order===n);
-    return {title:existing?.title||`Chapter ${n}`, order:n, confidence:existing?'Detected from chapter number':'Detected chapter number — review name'};
+    return {title:existing?.title||heading||`Chapter ${n}`,order:n,confidence:heading?'Detected from OCR heading':(existing?'Detected from chapter number':'Detected chapter number — review name')};
   }
   async function processUpload(){
     const sid=document.getElementById('upSubject')?.value; const bookId=document.getElementById('upBook')?.value; const chId=document.getElementById('upChapter')?.value; const text=(document.getElementById('upText')?.value||'').trim(); const files=[...(document.getElementById('pageFiles')?.files||[])];
@@ -335,9 +337,9 @@
       try{
         const payload=[];
         for(const file of files){const data=await blobToDataUrl(file);payload.push({name:file.name,mime:file.type,data:String(data).split(',')[1]||''})}
-        const r=await apiFetch('/ocr-batch',{method:'POST',body:JSON.stringify({items:payload,lang:/hi|hin|hindi/i.test(navigator.language||'')?'Devanagari':'eng'})});
+        const r=await apiFetch('/ocr-batch',{method:'POST',body:JSON.stringify({items:payload,lang:findSubjectBy(sid)?.language==='Hindi'?'hin+eng':'eng'})});
         for(const result of (r.results||[])){
-          const file=files[result.index]; const det=result.ok&&result.chapterDetection?.confidence==='Detected from OCR heading'?{title:result.chapterDetection.title,order:result.chapterDetection.number,confidence:result.chapterDetection.confidence}:detectChapterFromFilename(file?.name,fallback);
+          const file=files[result.index]; const det=result.ok&&result.chapterDetection?.confidence==='Detected from OCR heading'?{title:result.chapterDetection.title,order:result.chapterDetection.number,confidence:result.chapterDetection.confidence}:detectChapterFromFilename(file?.name,fallback,rawText);
           const paragraphs=result.ok?(result.paragraphs||[]):[]; const rawText=result.ok?(result.text||''):`OCR could not be completed automatically. Review this page and enter/correct the extracted text.`;
           items.push({name:file?.name||result.name,text:rawText,paragraphs,detected:det,file:file||null,ocr:result.ok?'server OCR':'manual review'});
         }
@@ -348,9 +350,9 @@
     }
     if(files.length && items.length<files.length){
       for(let i=items.length;i<files.length;i++){
-        const file=files[i]; let rawText=''; let det=detectChapterFromFilename(file?.name,fallback); let ocr='manual review';
+        const file=files[i]; let rawText=''; let det=detectChapterFromFilename(file?.name,fallback,rawText); let ocr='manual review';
         if(API_BASE&&serverToken()){
-          try{const data=await blobToDataUrl(file);const r=await apiFetch('/ocr',{method:'POST',body:JSON.stringify({mime:file.type,data:String(data).split(',')[1]||'',lang:/hi|hin|hindi/i.test(navigator.language||'')?'Devanagari':'eng'})});rawText=r.text||'';if(r.chapterDetection?.title&&r.chapterDetection.confidence==='Detected from OCR heading')det={title:r.chapterDetection.title,order:r.chapterDetection.number,confidence:r.chapterDetection.confidence};items.push({name:file.name,text:rawText,paragraphs:r.paragraphs||[],detected:det,file,ocr:'server OCR'});continue}catch(e){}
+          try{const data=await blobToDataUrl(file);const r=await apiFetch('/ocr',{method:'POST',body:JSON.stringify({mime:file.type,data:String(data).split(',')[1]||'',lang:findSubjectBy(sid)?.language==='Hindi'?'hin+eng':'eng'})});rawText=r.text||'';if(r.chapterDetection?.title&&r.chapterDetection.confidence==='Detected from OCR heading')det={title:r.chapterDetection.title,order:r.chapterDetection.number,confidence:r.chapterDetection.confidence};else det=detectChapterFromFilename(file?.name,fallback,rawText);items.push({name:file.name,text:rawText,paragraphs:r.paragraphs||[],detected:det,file,ocr:'server OCR'});continue}catch(e){}
         }
         items.push({name:file.name,text:`OCR could not be completed automatically. Review this page and enter/correct the extracted text.`,paragraphs:[],detected:det,file,ocr});
       }
@@ -513,14 +515,47 @@
   function startRecognition(mode){
     const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
     if(!SR){toast('Speech recognition is not supported in this browser. Use the text box fallback.');return}
-    const r=new SR();state.speakingLang=(findSubject().language==='Hindi'?'hi-IN':'en-IN');r.lang=state.speakingLang;r.interimResults=true;r.continuous=true;r.maxAlternatives=1;
-    state.speakingListening=true;state.recognition=r;
-    r.onresult=e=>{let finalText='';for(let i=e.resultIndex;i<e.results.length;i++){finalText+=e.results[i][0].transcript+' '}const text=finalText.trim();if(!text)return;if(mode==='qualification'){state.readerTranscript=text;state.readerAccuracy=wordAccuracy(findParagraph().text,text);const el=document.getElementById('qualText');if(el)el.value=text;}else if(mode==='speaking'){state.speakingTranscript=text;const el=document.getElementById('speechText');if(el)el.value=text;}else if(mode==='chapter'){const el=document.getElementById('chapterSpeech');if(el)el.value=text;state.chapterAnswers[findChapter().paragraphs[state.chapterIndex]?.id]=text;}else if(mode==='formula'){state.formulaTranscript=text;const el=document.getElementById('formulaSpeech');if(el)el.value=text;}else if(mode==='qa-qualification'){const el=document.getElementById('qaRead');if(el)el.value=text;}else if(mode==='qa-answer'){const el=document.getElementById('qaAnswer');if(el)el.value=text;}};
-    r.onerror=e=>{state.speakingListening=false;state.recognition=null;toast(`Mic error: ${e.error||'unknown'}`);render()};
-    r.onend=()=>{state.speakingListening=false;state.recognition=null;render()};
-    r.start();render();
+    try{state.recognition?.abort()}catch{}
+    if(state.recognitionRestartTimer){clearTimeout(state.recognitionRestartTimer);state.recognitionRestartTimer=null}
+    const r=new SR();
+    state.speakingLang=(findSubject()?.language==='Hindi'?'hi-IN':'en-IN');
+    r.lang=state.speakingLang;r.interimResults=true;r.continuous=true;r.maxAlternatives=1;
+    state.speakingListening=true;state.recognition=r;state.recognitionMode=mode;state.recognitionRunId=(state.recognitionRunId||0)+1;
+    const runId=state.recognitionRunId;
+    const existing=mode==='qualification'?state.readerTranscript:mode==='speaking'?state.speakingTranscript:mode==='formula'?state.formulaTranscript:mode==='chapter'?(state.chapterAnswers[findChapter().paragraphs[state.chapterIndex]?.id]||''):'';
+    state.recognitionBuffer=(existing||'').trim();
+    r.onresult=e=>{
+      if(runId!==state.recognitionRunId)return;
+      let interim='';
+      for(let i=e.resultIndex;i<e.results.length;i++){const t=(e.results[i][0].transcript||'').trim();if(!t)continue;if(e.results[i].isFinal)state.recognitionBuffer=(state.recognitionBuffer+' '+t).trim();else interim=(interim+' '+t).trim();}
+      const text=(state.recognitionBuffer+' '+interim).trim();if(!text)return;
+      if(mode==='qualification'){state.readerTranscript=text;state.readerAccuracy=wordAccuracy(findParagraph().text,text);const el=document.getElementById('qualText');if(el)el.value=text;}
+      else if(mode==='speaking'){state.speakingTranscript=text;const el=document.getElementById('speechText');if(el)el.value=text;}
+      else if(mode==='chapter'){const el=document.getElementById('chapterSpeech');if(el)el.value=text;state.chapterAnswers[findChapter().paragraphs[state.chapterIndex]?.id]=text;}
+      else if(mode==='formula'){state.formulaTranscript=text;const el=document.getElementById('formulaSpeech');if(el)el.value=text;}
+      else if(mode==='qa-qualification'){const el=document.getElementById('qaRead');if(el)el.value=text;}
+      else if(mode==='qa-answer'){const el=document.getElementById('qaAnswer');if(el)el.value=text;}
+    };
+    r.onerror=e=>{
+      if(runId!==state.recognitionRunId)return;
+      const recoverable=['no-speech','aborted'];
+      if(recoverable.includes(e.error)){scheduleRecognitionRestart(mode,runId);return;}
+      state.speakingListening=false;state.recognition=null;toast(`Mic error: ${e.error||'unknown'}`);render();
+    };
+    r.onend=()=>{if(runId!==state.recognitionRunId)return;if(state.speakingListening) scheduleRecognitionRestart(mode,runId);};
+    try{r.start()}catch(e){scheduleRecognitionRestart(mode,runId)}
+    render();
   }
-  function stopRecognition(){try{state.recognition?.stop()}catch{}state.speakingListening=false;state.recognition=null;render()}
+  function scheduleRecognitionRestart(mode,runId){
+    if(!state.speakingListening||runId!==state.recognitionRunId||state.recognitionRestartTimer)return;
+    state.recognitionRestartTimer=setTimeout(()=>{state.recognitionRestartTimer=null;if(!state.speakingListening||runId!==state.recognitionRunId)return;startRecognition(mode)},180);
+  }
+  function stopRecognition(){
+    state.speakingListening=false;state.recognitionRunId=(state.recognitionRunId||0)+1;
+    if(state.recognitionRestartTimer){clearTimeout(state.recognitionRestartTimer);state.recognitionRestartTimer=null}
+    try{state.recognition?.abort()}catch{}state.recognition=null;state.recognitionMode=null;
+    render();
+  }
 
   async function usageTick(){if(!current()||document.visibilityState!=='visible'||!['dashboard','library','book','bookDetail','pageView','lesson','speaking','history','progress','rankings','shares','profile','support'].includes(state.page))return; db.usage.activeMinutes+=1; db.usage.sessions.unshift({studentId:state.currentId,start:new Date().toISOString(),minutes:1,context:state.page}); db.usage.sessions=db.usage.sessions.slice(0,1000); saveDb(); if(API_BASE&&serverToken()){try{const r=await apiFetch('/usage',{method:'POST',body:JSON.stringify({minutes:1,context:state.page})}); if(r.usage)db.usage=r.usage; saveDb()}catch{}}}
   setInterval(usageTick,60000);

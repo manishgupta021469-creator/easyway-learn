@@ -26,7 +26,7 @@ const RATE_LIMIT = 120;
 const MAX_REQUEST_BYTES = 16_000_000;
 const MAX_AUDIO_BYTES = 15_000_000;
 const MAX_ANTICHEAT_BYTES = 1_500_000;
-const APP_VERSION = '0.50.0';
+const APP_VERSION = '0.52.0';
 const TRANSCRIBE_MODEL = process.env.OPENAI_TRANSCRIBE_MODEL || 'gpt-4o-mini-transcribe';
 const rateBuckets = new Map();
 
@@ -100,7 +100,7 @@ function securityHeaders(res) {
   res.setHeader('cross-origin-opener-policy','same-origin');
   res.setHeader('cross-origin-resource-policy','same-origin');
   res.setHeader('permissions-policy','camera=(self), microphone=(self), geolocation=()');
-  res.setHeader('content-security-policy', "default-src 'self'; script-src 'self'; script-src-attr 'unsafe-inline'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'");
+  res.setHeader('content-security-policy', "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'");
   if (process.env.NODE_ENV === 'production') res.setHeader('strict-transport-security','max-age=31536000; includeSubDomains');
 }
 function json(res, status, body) {
@@ -169,10 +169,11 @@ function splitParagraphs(text){
   const lines=cleaned.split(/\n+/).map(x=>x.replace(/\s+/g,' ').trim()).filter(Boolean);
   const out=[]; let cur='';
   for(const line of lines){
-    const looksHeading=/^(?:chapter|अध्याय|पाठ|exercise|प्रश्न|question|q\.?\s*\d+)/i.test(line);
-    if(cur && looksHeading){out.push(cur);cur='';}
+    const looksHeading=/^(?:chapter|अध्याय|पाठ|exercise|प्रश्न|question|q\.?\s*\d+|answer|उत्तर)/i.test(line);
+    const looksNewParagraph=/^(?:[A-ZА-Я][^.!?]{0,90}:|[0-9]+[.)]\s+)/.test(line);
+    if(cur && (looksHeading||looksNewParagraph)){out.push(cur);cur='';}
     cur=cur?`${cur} ${line}`:line;
-    if(/[.!?।॥]$/.test(line) && cur.length>180){out.push(cur);cur='';}
+    if(/[.!?।॥]$/.test(line) && cur.length>140){out.push(cur);cur='';}
   }
   if(cur) out.push(cur);
   return out;
@@ -182,20 +183,36 @@ function chapterFromOCR(text, fallback=''){
   const m=String(text||'').match(/(?:chapter|अध्याय|पाठ)\s*(?:no\.?\s*)?(\d{1,3})/i);
   const titleLine=lines.find(x=>/(?:chapter|अध्याय|पाठ)\s*(?:no\.?\s*)?\d{1,3}/i.test(x));
   if(m) return {number:Number(m[1]),title:titleLine||`Chapter ${m[1]}`,confidence:'Detected from OCR heading'};
+  // If OCR does not include a numbered chapter heading, keep the first short heading as a reviewable candidate.
+  const candidate=lines.find(x=>x.length>=3&&x.length<=90&&!/[.!?।॥]$/.test(x)&&!/^page\s+\d+/i.test(x));
+  if(candidate) return {title:candidate,confidence:'Detected possible chapter heading — review required'};
   return {title:fallback||'Selected chapter',confidence:'No chapter heading detected — review required'};
 }
+function resolveOcrLanguage(requested){
+  const aliases={Devanagari:'hin','Hindi':'hin','Hindi+English':'hin+eng','English':'eng'};
+  let want=aliases[String(requested||'')]||String(requested||'eng');
+  if(!/^[A-Za-z0-9_+,-]{2,80}$/.test(want))want='eng';
+  let installed='';
+  try{installed=execFileSync('tesseract',['--list-langs'],{timeout:5000}).toString('utf8')}catch{}
+  const has=(code)=>installed.split(/\r?\n/).includes(code);
+  const parts=want.split('+');
+  if(parts.every(has))return want;
+  if(has('hin')&&has('eng')&&(want.includes('hin')||want.includes('Hindi')))return 'hin+eng';
+  if(has('hin')&&want.includes('hin'))return 'hin';
+  return has('eng')?'eng':'osd';
+}
 async function runOCR(raw,mime,lang){
-  const safeLang=/^[A-Za-z0-9_+,-]{2,80}$/.test(lang)?lang:'eng';
+  const safeLang=resolveOcrLanguage(lang);
   const work=fs.mkdtempSync(path.join(os.tmpdir(),'easyway-ocr-'));
   const input=path.join(work,mime==='application/pdf'?'page.pdf':'page');
   try{
     fs.writeFileSync(input,raw); let image=input;
     if(mime==='application/pdf'){
       const prefix=path.join(work,'render');
-      execFileSync('pdftoppm',['-f','1','-singlefile','-png','-r','180',input,prefix],{timeout:20000});
+      execFileSync('pdftoppm',['-f','1','-singlefile','-png','-r','220',input,prefix],{timeout:30000});
       image=prefix+'.png';
     }
-    const out=execFileSync('tesseract',[image,'stdout','-l',safeLang,'--psm','6'],{timeout:30000,maxBuffer:2_000_000}).toString('utf8').trim();
+    const out=execFileSync('tesseract',[image,'stdout','-l',safeLang,'--psm','6'],{timeout:45000,maxBuffer:4_000_000}).toString('utf8').trim();
     return {text:out,paragraphs:splitParagraphs(out),chapterDetection:chapterFromOCR(out)};
   } finally { try{fs.rmSync(work,{recursive:true,force:true})}catch{} }
 }
