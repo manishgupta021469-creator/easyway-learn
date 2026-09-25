@@ -26,7 +26,7 @@ const RATE_LIMIT = 120;
 const MAX_REQUEST_BYTES = 100_000_000;
 const MAX_AUDIO_BYTES = 15_000_000;
 const MAX_ANTICHEAT_BYTES = 1_500_000;
-const APP_VERSION = '0.69.0';
+const APP_VERSION = '0.70.0';
 const TRANSCRIBE_MODEL = process.env.OPENAI_TRANSCRIBE_MODEL || 'gpt-4o-mini-transcribe';
 const rateBuckets = new Map();
 
@@ -347,7 +347,7 @@ async function handle(req,res) {
     if (req.method==='POST' && url.pathname==='/api/register') {
       if (req.headers['content-type'] && !req.headers['content-type'].toLowerCase().startsWith('application/json')) return json(res,415,{error:'JSON content required'});
       const b=await body(req); const id=String(b.studentId||'').trim().toUpperCase(); const password=String(b.password||'');
-      if (!/^STU-[A-Z0-9-]{2,40}$/.test(id) || password.length < 6) return json(res,400,{error:'Student ID or password does not meet requirements'});
+      if (!/^[A-Z0-9][A-Z0-9_-]{3,29}$/.test(id) || password.length < 6) return json(res,400,{error:'Student ID 4–30 characters का रखें; password कम से कम 6 characters का होना चाहिए'});
       if (store.students[id]) return json(res,409,{error:'Student ID already exists'});
       const p=hashPassword(password);
       const recovery=recoveryCode();
