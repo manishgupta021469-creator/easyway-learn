@@ -19,14 +19,14 @@ const USE_SQLITE = process.env.EASYWAY_DB !== 'json' && !!DatabaseSync;
 const ASSET_DIR = path.join(DATA_DIR, 'assets');
 const SESSION_TTL_MS = 1000 * 60 * 60 * 12;
 const sessions = new Map();
-const MAX_JSON_BYTES = 25_000_000;
+const MAX_JSON_BYTES = 32_000_000;
 const MAX_ASSET_BYTES = 15_000_000;
 const RATE_WINDOW_MS = 60_000;
 const RATE_LIMIT = 120;
-const MAX_REQUEST_BYTES = 16_000_000;
+const MAX_REQUEST_BYTES = 32_000_000;
 const MAX_AUDIO_BYTES = 15_000_000;
 const MAX_ANTICHEAT_BYTES = 1_500_000;
-const APP_VERSION = '0.52.0';
+const APP_VERSION = '0.64.0';
 const TRANSCRIBE_MODEL = process.env.OPENAI_TRANSCRIBE_MODEL || 'gpt-4o-mini-transcribe';
 const rateBuckets = new Map();
 
@@ -56,8 +56,15 @@ function ensureStore() {
 }
 function readStore() {
   ensureStore();
-  if (USE_SQLITE) return JSON.parse(db.prepare('SELECT value FROM app_state WHERE key=?').get('students').value);
-  return JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+  const store = USE_SQLITE ? JSON.parse(db.prepare('SELECT value FROM app_state WHERE key=?').get('students').value) : JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+  if (!store.students) store.students={};
+  if (!store.groupSessions) store.groupSessions={};
+  if (!store.students['STU-001']) {
+    const p=hashPassword('demo123');
+    store.students['STU-001']={studentId:'STU-001',name:'Aarav Sharma',password:p,recoveryHash:null,profile:{className:'6',section:'A',school:'Demo School',email:'',history:[{school:'Demo School',className:'6',section:'A',year:'2026-27'}]},state:{},audit:[]};
+    writeStore(store);
+  }
+  return store;
 }
 function writeStore(store) {
   ensureStore();
@@ -163,20 +170,20 @@ function serveStatic(req,res) {
 
 function splitParagraphs(text){
   const cleaned=String(text||'').replace(/\r/g,'').trim();
-  if(!cleaned) return [];
+  if(!cleaned)return [];
   const lines=cleaned.split(/\n+/).map(x=>x.replace(/[\t ]+/g,' ').trim()).filter(Boolean);
-  const heading=/^(?:(?:chapter|unit|lesson|exercise|chapter\s*no\.?|lesson\s*no\.?|अध्याय|पाठ|इकाई|अध्याय\s*क्रमांक|प्रश्न|question|q\.?)[\s.:#-]*\d{0,3}\b)/i;
-  const numbered=/^(?:\d{1,3}[.)]|[A-Za-z][.)])\s+/;
-  const out=[]; let cur='';
-  const flush=()=>{const v=cur.replace(/\s+/g,' ').trim();if(v)out.push(v);cur=''};
+  const heading=/^(?:(?:chapter|unit|lesson|topic|exercise|chapter\s*(?:no\.?|number)?|lesson\s*(?:no\.?|number)?)[\s.:#-]*\d{0,3}\b|(?:अध्याय|पाठ|इकाई|विषय|अभ्यास)[\s.:#-]*(?:क्रमांक|नंबर)?\s*\d{0,3}\b)/iu;
+  const numbered=/^(?:\d{1,3}[.)]|[A-Za-z][.)]|[-•▪◦])\s+/;
+  const out=[];let cur=[];
+  const flush=()=>{const joined=cur.join(' ').replace(/\s+/g,' ').trim();cur=[];if(!joined)return;if(heading.test(joined)&&joined.length<220)return;out.push(joined)};
   for(const line of lines){
-    if(heading.test(line)||numbered.test(line)) flush();
-    cur=cur?`${cur} ${line}`:line;
-    if(/[.!?।॥]$/.test(line) && cur.length>=140) flush();
+    if(heading.test(line)){flush();continue;}
+    if(numbered.test(line)&&cur.length)flush();
+    cur.push(line);
+    if(/[.!?।॥]$/.test(line)&&cur.join(' ').length>=110)flush();
   }
   flush();
-  // If OCR produced one giant block, split at sentence boundaries so paragraphs are selectable.
-  if(out.length===1 && out[0].length>260){
+  if(out.length===1&&out[0].length>280){
     const parts=out[0].split(/(?<=[.!?।॥])\s+(?=[A-ZА-Яअ-ह0-9])/u).map(x=>x.trim()).filter(Boolean);
     if(parts.length>1)return parts;
   }
@@ -184,12 +191,9 @@ function splitParagraphs(text){
 }
 function chapterFromOCR(text, fallback=''){
   const lines=String(text||'').split(/\r?\n/).map(x=>x.replace(/\s+/g,' ').trim()).filter(Boolean);
-  const re=/(?:chapter|unit|lesson|अध्याय|पाठ|इकाई)(?:\s*(?:no\.?|number|क्रमांक))?\s*[.:#-]?\s*(\d{1,3})?/i;
+  const re=/(?:(?:chapter|unit|lesson|topic)(?:\s*(?:no\.?|number|क्रमांक))?|(?:अध्याय|पाठ|इकाई|विषय)(?:\s*(?:क्रमांक|नंबर))?)[\s.:#-]*?(\d{1,3})?\b/iu;
   const line=lines.find(x=>re.test(x));
-  if(line){
-    const m=line.match(re); const num=m&&m[1]?Number(m[1]):undefined;
-    return {number:num,title:line.slice(0,120),confidence:'Detected from OCR heading'};
-  }
+  if(line){const m=line.match(re);const num=m&&m[1]?Number(m[1]):undefined;return {number:num,title:line.slice(0,120),confidence:'Detected from OCR heading'};}
   return {title:fallback||'Selected chapter',confidence:'No chapter heading detected — selected chapter retained'};
 }
 function normalizeOCRLanguage(lang){
@@ -200,7 +204,14 @@ function normalizeOCRLanguage(lang){
   return parts.length?Array.from(new Set(parts)).join('+'):'eng';
 }
 function installedTesseractLanguages(){
-  try{return execFileSync('tesseract',['--list-langs'],{timeout:5000}).toString('utf8').split(/\r?\n/).map(x=>x.trim()).filter(Boolean)}catch{return []}
+  try{return execFileSync('tesseract',['--list-langs'],{timeout:5000}).toString('utf8').split(/\r?\n/).map(x=>x.trim()).filter(x=>x&&/^[A-Za-z0-9_]+$/.test(x));}catch{return []}
+}
+function ocrQuality(text){
+  const s=String(text||'');
+  if(!s)return 0;
+  const chars=[...s].filter(ch=>/\p{L}|\p{N}/u.test(ch)).length;
+  const replacement=(s.match(/[�]/g)||[]).length;
+  return chars - replacement*20 + Math.min(s.length,500)*0.01;
 }
 async function runOCR(raw,mime,lang){
   let safeLang=normalizeOCRLanguage(lang);
@@ -209,7 +220,6 @@ async function runOCR(raw,mime,lang){
   const usable=requested.filter(x=>available.includes(x));
   safeLang=usable.length?usable.join('+'):(available.includes('eng')?'eng':(available[0]||'eng'));
   if(!available.length) throw new Error('Tesseract is not installed on the server');
-  if(!safeLang) throw new Error('No usable OCR language is installed');
   const work=fs.mkdtempSync(path.join(os.tmpdir(),'easyway-ocr-'));
   const input=path.join(work,mime==='application/pdf'?'input.pdf':'input');
   try{
@@ -217,24 +227,26 @@ async function runOCR(raw,mime,lang){
     let images=[];
     if(mime==='application/pdf'){
       const prefix=path.join(work,'page');
-      execFileSync('pdftoppm',['-png','-r','220',input,prefix],{timeout:90000});
+      execFileSync('pdftoppm',['-png','-r','180',input,prefix],{timeout:90000});
       images=fs.readdirSync(work).filter(x=>/^page-\d+\.png$/.test(x)).sort((a,b)=>Number(a.match(/\d+/)[0])-Number(b.match(/\d+/)[0])).map(x=>path.join(work,x));
-      if(!images.length) throw new Error('PDF could not be converted to images');
+      if(!images.length)throw new Error('PDF could not be converted to images');
     }else images=[input];
     const textParts=[];
     for(const image of images){
-      let best='';
-      for(const psm of ['6','3','11']){
+      const candidates=[];
+      for(const psm of ['6','11']){
         try{
-          const out=execFileSync('tesseract',[image,'stdout','-l',safeLang,'--psm',psm],{timeout:60000,maxBuffer:6_000_000}).toString('utf8').trim();
-          if(out.length>best.length) best=out;
-        }catch(e){ if(psm==='6' && !best) throw e; }
+          const out=execFileSync('tesseract',[image,'stdout','-l',safeLang,'--oem','1','--psm',psm],{timeout:60000,maxBuffer:6_000_000}).toString('utf8').trim();
+          if(out)candidates.push(out);
+        }catch(e){ if(psm==='6'&&!candidates.length)throw e; }
       }
-      if(best) textParts.push(best);
+      const best=candidates.sort((a,b)=>ocrQuality(b)-ocrQuality(a))[0]||'';
+      if(best)textParts.push(best);
     }
     const text=textParts.join('\n\n').trim();
-    if(!text) throw new Error(`OCR returned no readable text (languages: ${safeLang})`);
-    return {text,paragraphs:splitParagraphs(text),chapterDetection:chapterFromOCR(text),ocrLanguage:safeLang,pageCount:images.length};
+    if(!text)throw new Error(`OCR returned no readable text (languages: ${safeLang}; pages: ${images.length})`);
+    const paragraphs=splitParagraphs(text);
+    return {text,paragraphs,chapterDetection:chapterFromOCR(text),ocrLanguage:safeLang,pageCount:images.length};
   } finally {try{fs.rmSync(work,{recursive:true,force:true})}catch{}}
 }
 
@@ -311,7 +323,7 @@ async function handle(req,res) {
   const declaredLength=Number(req.headers['content-length']||0);
   if (Number.isFinite(declaredLength) && declaredLength > MAX_REQUEST_BYTES) return json(res,413,{error:'Request body is too large'});
   const url = new URL(req.url, 'http://localhost');
-  if (req.method === 'GET' && url.pathname === '/api/health') return json(res,200,{ok:true,service:'easyway-learn-backend',version:APP_VERSION,node:process.version,database:USE_SQLITE?'sqlite':'json',uptimeSeconds:Math.floor(process.uptime()),time:new Date().toISOString()});
+  if (req.method === 'GET' && (url.pathname === '/healthz' || url.pathname === '/api/health')) return json(res,200,{ok:true,service:'easyway-learn-backend',version:APP_VERSION,node:process.version,database:USE_SQLITE?'sqlite':'json',uptimeSeconds:Math.floor(process.uptime()),time:new Date().toISOString()});
   if (!url.pathname.startsWith('/api/')) return serveStatic(req,res);
 
   try {

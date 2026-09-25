@@ -88,6 +88,12 @@
       merged.accounts.forEach(a=>{a.id=String(a.id||'').toUpperCase();a.history=Array.isArray(a.history)?a.history:[];a.status=a.status||'Active'});
       // Legacy/plaintext passwords are migrated on first successful login; no new account stores plaintext.
       merged.subjects = Array.isArray(incoming.subjects) ? incoming.subjects : base.subjects;
+      merged.subjects = merged.subjects.map(s=>({
+        ...s,
+        name:String(s?.name||s?.title||'Untitled Subject'),
+        language:String(s?.language||'English'),
+        books:Array.isArray(s?.books)?s.books.map(b=>({ ...b, title:String(b?.title||b?.name||'Untitled Book'), chapters:Array.isArray(b?.chapters)?b.chapters:[] })):[]
+      }));
       merged.progress = incoming.progress && typeof incoming.progress === 'object' ? incoming.progress : {};
       merged.history = Array.isArray(incoming.history) ? incoming.history : [];
       merged.audit = Array.isArray(incoming.audit) ? incoming.audit : [];
@@ -114,7 +120,7 @@
     return r;
   }
   async function syncToServer(){if(syncing||!API_BASE||!state.currentId||!serverToken())return;syncing=true;try{const me=current();await apiFetch('/me',{method:'PUT',body:JSON.stringify({name:me?.name||'',profile:me?{email:me.email||'',className:me.className||'',section:me.section||'',school:me.school||'',history:me.history||[]}: {}})});await apiFetch('/state',{method:'PUT',body:JSON.stringify({state:remoteState()})})}finally{syncing=false}}
-  async function hydrateFromServer(){const r=await apiFetch('/me');const sr=await apiFetch('/state');const st=sr.state||{};if(Array.isArray(st.subjects))db.subjects=st.subjects;if(st.progress&&typeof st.progress==='object')db.progress=st.progress;if(Array.isArray(st.history))db.history=st.history;if(st.shares&&typeof st.shares==='object')db.shares={...db.shares,...st.shares};if(Array.isArray(st.audit))db.audit=st.audit;if(st.usage&&typeof st.usage==='object')db.usage={...db.usage,...st.usage}; if(Array.isArray(st.feedback))db.feedback=st.feedback;if(st.settings&&typeof st.settings==='object')db.settings={...db.settings,...st.settings};try{const sh=await apiFetch('/shares');if(sh&&typeof sh==='object')db.shares={...db.shares,...sh,snapshots:{...(db.shares.snapshots||{}),...(sh.snapshots||{})}}}catch{}const me=current();if(me&&r.name)me.name=r.name;if(me&&r.profile)Object.assign(me,r.profile);localStorage.setItem(DB_KEY,JSON.stringify(db));}
+  async function hydrateFromServer(){const r=await apiFetch('/me');const sr=await apiFetch('/state');const st=sr.state||{};if(Array.isArray(st.subjects)&&st.subjects.length)db.subjects=st.subjects.map(s=>({...s,name:String(s?.name||s?.title||'Untitled Subject'),books:Array.isArray(s?.books)?s.books:[]}));if(st.progress&&typeof st.progress==='object'&&Object.keys(st.progress).length)db.progress=st.progress;if(Array.isArray(st.history)&&st.history.length)db.history=st.history;if(st.shares&&typeof st.shares==='object')db.shares={...db.shares,...st.shares};if(Array.isArray(st.audit)&&st.audit.length)db.audit=st.audit;if(st.usage&&typeof st.usage==='object')db.usage={...db.usage,...st.usage};if(Array.isArray(st.feedback))db.feedback=st.feedback;if(st.settings&&typeof st.settings==='object')db.settings={...db.settings,...st.settings};try{const sh=await apiFetch('/shares');if(sh&&typeof sh==='object')db.shares={...db.shares,...sh,snapshots:{...(db.shares.snapshots||{}),...(sh.snapshots||{})}}}catch{}const me=current();if(me&&r.name)me.name=r.name;if(me&&r.profile)Object.assign(me,r.profile);localStorage.setItem(DB_KEY,JSON.stringify(db));}
   async function hashPassword(value){
     const data=new TextEncoder().encode(String(value));
     const digest=await crypto.subtle.digest('SHA-256',data);
@@ -323,17 +329,14 @@
     return {title:existing?.title||`Chapter ${n}`, order:n, confidence:existing?'Detected from chapter number':'Detected chapter number — review name'};
   }
   function ocrMime(file){
-    const t=String(file?.type||'').toLowerCase();
-    if(t==='application/pdf'||t==='image/jpeg'||t==='image/png'||t==='image/webp') return t;
-    const n=String(file?.name||'').toLowerCase();
-    if(n.endsWith('.pdf')) return 'application/pdf';
-    if(n.endsWith('.jpg')||n.endsWith('.jpeg')) return 'image/jpeg';
-    if(n.endsWith('.png')) return 'image/png';
-    if(n.endsWith('.webp')) return 'image/webp';
-    return t||'application/octet-stream';
-  }
-  function ocrErrorMessage(result,file){
-    return result?.error || `OCR failed for ${file?.name||'page'}. Use JPG/PNG/WebP/PDF and keep each file under 15 MB.`;
+    const type=String(file?.type||'').toLowerCase().split(';')[0].trim();
+    if(type==='image/jpeg'||type==='image/png'||type==='image/webp'||type==='application/pdf')return type;
+    const name=String(file?.name||'').toLowerCase();
+    if(name.endsWith('.pdf'))return 'application/pdf';
+    if(name.endsWith('.png'))return 'image/png';
+    if(name.endsWith('.webp'))return 'image/webp';
+    if(name.endsWith('.jpg')||name.endsWith('.jpeg'))return 'image/jpeg';
+    return type || 'application/octet-stream';
   }
   async function processUpload(){
     const sid=document.getElementById('upSubject')?.value; const bookId=document.getElementById('upBook')?.value; const chId=document.getElementById('upChapter')?.value; const text=(document.getElementById('upText')?.value||'').trim(); const files=[...(document.getElementById('pageFiles')?.files||[])];
@@ -344,28 +347,22 @@
     if(newCh)fallback={id:'NEW',title:newCh,order:b.chapters.length+1,complete:false,pages:[],paragraphs:[],qa:[],formulas:[]};
     if(!files.length && !text){toast('Choose a file or enter extracted text');return}
     const items=[];
-    if(files.length && API_BASE && serverToken()){
-      try{
-        const payload=[];
-        for(const file of files){const data=await blobToDataUrl(file);payload.push({name:file.name,mime:ocrMime(file),data:String(data).split(',')[1]||''})}
-        const r=await apiFetch('/ocr-batch',{method:'POST',body:JSON.stringify({items:payload,lang:'eng+hin'})});
-        for(const result of (r.results||[])){
-          const file=files[result.index]; const det=result.ok&&result.chapterDetection?.confidence==='Detected from OCR heading'?{title:result.chapterDetection.title,order:result.chapterDetection.number,confidence:result.chapterDetection.confidence}:detectChapterFromFilename(file?.name,fallback);
-          const paragraphs=result.ok?(result.paragraphs||[]):[]; const rawText=result.ok?(result.text||''):`OCR failed: ${ocrErrorMessage(result,file)}`;
-          items.push({name:file?.name||result.name,text:rawText,paragraphs,detected:det,file:file||null,ocr:result.ok?'server OCR':'manual review',ocrError:result.ok?'':ocrErrorMessage(result,file)});
-        }
-        if(items.length===files.length) toast(`OCR processed ${items.filter(x=>x.ocr==='server OCR').length}/${files.length} page(s)`); if(items.some(x=>x.ocr!=='server OCR')) toast('Some pages could not be OCR-read; the error is shown in the review box.');
-      }catch(e){
-        // Fall through to per-page OCR/manual review so one batch failure does not block upload.
-      }
-    }
-    if(files.length && items.length<files.length){
-      for(let i=items.length;i<files.length;i++){
-        const file=files[i]; let rawText=''; let det=detectChapterFromFilename(file?.name,fallback); let ocr='manual review';
+    if(files.length){
+      for(let i=0;i<files.length;i++){
+        const file=files[i]; let rawText=''; let det=detectChapterFromFilename(file?.name,fallback); let ocr='manual review'; let ocrError='';
         if(API_BASE&&serverToken()){
-          try{const data=await blobToDataUrl(file);const r=await apiFetch('/ocr',{method:'POST',body:JSON.stringify({mime:ocrMime(file),data:String(data).split(',')[1]||'',lang:'eng+hin'})});rawText=r.text||'';if(r.chapterDetection?.title&&r.chapterDetection.confidence==='Detected from OCR heading')det={title:r.chapterDetection.title,order:r.chapterDetection.number,confidence:r.chapterDetection.confidence};items.push({name:file.name,text:rawText,paragraphs:r.paragraphs||[],detected:det,file,ocr:'server OCR',ocrError:''});continue}catch(e){}
-        }
-        items.push({name:file.name,text:`OCR failed: ${e?.message||'processing failed'}. Review this page and enter/correct the extracted text.`,paragraphs:[],detected:det,file,ocr,ocrError:e?.message||'processing failed'});
+          try{
+            const data=await blobToDataUrl(file);
+            const r=await apiFetch('/ocr',{method:'POST',body:JSON.stringify({mime:ocrMime(file),data:String(data).split(',')[1]||'',lang:'eng+hin'})});
+            rawText=String(r.text||'').trim();
+            const detectedParagraphs=Array.isArray(r.paragraphs)?r.paragraphs:[];
+            if(r.chapterDetection?.title&&r.chapterDetection?.confidence==='Detected from OCR heading') det={title:r.chapterDetection.title,order:r.chapterDetection.number,confidence:r.chapterDetection.confidence};
+            items.push({name:file.name,text:rawText,paragraphs:detectedParagraphs,detected:det,file,ocr:'server OCR',ocrError:'',ocrLanguage:r.ocrLanguage||'',pageCount:r.pageCount||1});
+            toast(`OCR ${i+1}/${files.length}: ${detectedParagraphs.length} paragraph(s)`);
+            continue;
+          }catch(e){ocrError=e?.message||'processing failed'}
+        }else ocrError='Secure server session is not active; sign in again before OCR.';
+        items.push({name:file.name,text:`OCR failed: ${ocrError||'processing failed'}. You can correct the text below before saving.`,paragraphs:[],detected:det,file,ocr,ocrError});
       }
     }
     if(!files.length&&text){items.push({name:'manual-page.txt',text,paragraphs:[{id:'MANUAL-1',title:'Detected Paragraph 1',text}],detected:detectChapterFromFilename('',fallback),file:null,ocr:'manual'});}
@@ -488,8 +485,34 @@
   async function loadFeedback(){if(API_BASE&&serverToken()){try{const r=await apiFetch('/feedback');db.feedback=r.feedback||[];saveDb();toast('Feedback status refreshed');render();return}catch(e){toast(e.message||'Could not refresh reports');return}}toast('Feedback is currently stored locally');}
   async function submitFeedback(){const issue=document.getElementById('fbType')?.value||'';const comment=document.getElementById('fbText')?.value.trim()||'';if(!comment){toast('Please describe the problem');return}if(API_BASE&&serverToken()){try{const r=await apiFetch('/feedback',{method:'POST',body:JSON.stringify({issue,comment,targetId:state.paragraphId||state.chapterId||''})});db.audit.unshift({actor:state.currentId,action:'Feedback',target:state.chapterId,time:new Date().toISOString(),extra:`${issue}: ${comment}`});saveDb();db.feedback ||= []; db.feedback.unshift(r.feedback); db.feedback=db.feedback.slice(0,1000); saveDb(); toast(`Feedback submitted — ${r.feedback.status}`); document.getElementById('fbText').value=''; render(); return}catch(e){toast(e.message||'Feedback could not be submitted');return}}db.audit.unshift({actor:state.currentId,action:'Feedback',target:state.chapterId,time:new Date().toISOString(),extra:`${issue}: ${comment}`});saveDb();toast('Feedback saved locally; it will be submitted when server sync is available');document.getElementById('fbText').value='';}
 
-  function openNewSubject(){stopRecognition(false); const name=window.prompt('Enter Subject Name'); if(name===null)return; const title=String(name).trim(); if(!title){toast('Enter a subject name');return;} const id='SUB-'+Date.now(); db.subjects.push({id,title,language:'English',books:[]}); saveDb(); addAudit('Create Subject',id,title); toast('Subject created'); render()}
-  function openNewBook(subjectId){stopRecognition(false); const titleInput=window.prompt('Enter Book Name'); if(titleInput===null)return; const title=String(titleInput).trim(); if(!title){toast('Enter a book title');return;} const clsInput=window.prompt('Enter Class (optional)',''); if(clsInput===null)return; const cls=String(clsInput).trim(); const s=findSubjectBy(subjectId); if(!s)return; const id='BOOK-'+Date.now(); s.books.push({id,title,className:cls,chapters:[]}); saveDb(); addAudit('Create Book',id,`subject=${subjectId}`); toast('Book created'); render()}
+  function openNewSubject(){
+    stopRecognition(false);
+    const name=(window.prompt('Create Subject\n\nEnter subject name:', '')||'').trim();
+    if(!name)return;
+    if(db.subjects.some(x=>String(x.name||'').trim().toLowerCase()===name.toLowerCase())){toast('Subject already exists');return}
+    const languageRaw=(window.prompt('Language\n\nType English or Hindi:', 'English')||'English').trim().toLowerCase();
+    const language=languageRaw.startsWith('h')?'Hindi':'English';
+    const id='SUB-'+Date.now();
+    db.subjects.push({id,name,language,books:[]});
+    saveDb();addAudit('Create Subject',id);
+    toast('Subject created');
+    state.subjectId=id;state.bookId='';state.chapterId='';state.page='library';
+    render();
+  }
+  function openNewBook(subjectId){
+    stopRecognition(false);
+    const s=findSubjectBy(subjectId);
+    if(!s){toast('Select a subject first');return}
+    const title=(window.prompt('Create Book\n\nEnter book name:', '')||'').trim();
+    if(!title)return;
+    const cls=(window.prompt('Class\n\nEnter class (optional):', '')||'').trim();
+    const id='BOOK-'+Date.now();
+    s.books.push({id,title,className:cls,chapters:[]});
+    saveDb();addAudit('Create Book',id,`subject=${subjectId}`);
+    toast('Book created');
+    state.subjectId=s.id;state.bookId=id;state.chapterId='';state.page='book';
+    render();
+  }
   async function deleteSubject(id){
     const s=findSubjectBy(id); if(!s)return;
     if(!confirm(`Delete subject "${s.name}" and all of its books, chapters, pages and local page files from your own content? Accepted shared snapshots remain with recipients.`))return;
@@ -506,15 +529,15 @@
     if(state.bookId===id){state.bookId=s.books[0]?.id||'';state.chapterId=s.books[0]?.chapters?.[0]?.id||'';state.page='library';}
     saveDb();addAudit('Delete Book',id,`subject=${s.id}`);toast('Book deleted from your own content');render();
   }
-  function createSubject(){const name=(document.getElementById('newSubName')?.value||'').trim();const lang=document.getElementById('newSubLang')?.value||'English';if(!name){toast('Enter a subject name');return}if(db.subjects.some(x=>x.name.toLowerCase()===name.toLowerCase())){toast('Subject already exists');return}const id='SUB-'+Date.now();db.subjects.push({id,name,language:lang,books:[]});saveDb();addAudit('Create Subject',id);state.modal=null;toast('Subject created');render()}
-  function createBook(){const sid=state.modal.subjectId;const s=findSubjectBy(sid);const title=(document.getElementById('newBookTitle')?.value||'').trim();const cls=(document.getElementById('newBookClass')?.value||'').trim();if(!title){toast('Enter a book title');return}const id='BOOK-'+Date.now();s.books.push({id,title,className:cls,chapters:[]});saveDb();addAudit('Create Book',id,`subject=${sid}`);state.modal=null;toast('Book created');render()}
+  function createSubject(){const name=(document.getElementById('newSubName')?.value||'').trim();const lang=document.getElementById('newSubLang')?.value||'English';if(!name){toast('Enter a subject name');return}if(db.subjects.some(x=>String(x.name||'').toLowerCase()===name.toLowerCase())){toast('Subject already exists');return}const id='SUB-'+Date.now();db.subjects.push({id,name,language:lang,books:[]});saveDb();addAudit('Create Subject',id);state.modal=null;toast('Subject created');render()}
+  function createBook(){const sid=state.modal?.subjectId;const s=findSubjectBy(sid);const title=(document.getElementById('newBookTitle')?.value||'').trim();const cls=(document.getElementById('newBookClass')?.value||'').trim();if(!s){toast('Select a subject first');return}if(!title){toast('Enter a book title');return}const id='BOOK-'+Date.now();s.books.push({id,title,className:cls,chapters:[]});saveDb();addAudit('Create Book',id,`subject=${sid}`);state.modal=null;toast('Book created');render()}
   function editModal(){
     if(state.modal.type==='share')return shareModal();
     if(state.modal.type==='newSubject')return `<div class="modal-backdrop"><div class="modal"><div class="row between"><h2 class="section-title">Create Subject</h2><button class="btn ghost" onclick="window.closeModal();return false" type="button">Close</button></div><div class="field"><label>SUBJECT NAME</label><input id="newSubName" type="text" inputmode="text" autocomplete="off" placeholder="Example: Physics" /></div><div class="field"><label>LANGUAGE</label><select id="newSubLang"><option>English</option><option>Hindi</option></select></div><button class="btn primary" onclick="createSubject()">Create Subject</button></div></div>`;
     if(state.modal.type==='newBook')return `<div class="modal-backdrop"><div class="modal"><div class="row between"><h2 class="section-title">Create Book</h2><button class="btn ghost" onclick="window.closeModal();return false" type="button">Close</button></div><div class="field"><label>BOOK TITLE</label><input id="newBookTitle" type="text" inputmode="text" autocomplete="off" placeholder="Example: Physics — Class 11" /></div><div class="field"><label>CLASS</label><input id="newBookClass" type="text" inputmode="numeric" autocomplete="off" placeholder="11" /></div><button class="btn primary" onclick="createBook()">Create Book</button></div></div>`;
     if(state.modal.type==='uploadPreview'){
       const groups={};state.modal.items.forEach(x=>{groups[x.detected.title]??={confidence:x.detected.confidence,count:0};groups[x.detected.title].count++});
-      return `<div class="modal-backdrop"><div class="modal"><div class="row between"><div><div class="eyebrow">OCR / AI REVIEW</div><h2 class="section-title" style="font-size:22px">Confirm page grouping</h2></div><button class="btn ghost" onclick="window.closeModal();return false" type="button">Cancel</button></div><p class="muted">Pages are grouped by chapter heading/number when detected; otherwise the selected chapter is used. Review before publication.</p><div class="list">${Object.entries(groups).map(([title,g])=>`<div class="list-item"><div><b>${esc(title)}</b><div class="small muted">${g.count} page(s) • ${esc(g.confidence)}</div></div><span class="pill ${g.confidence.startsWith('Detected from')?'green':'amber'}">${g.confidence.startsWith('Detected from')?'High confidence':'Review'}</span></div>`).join('')}</div><div class="card" style="margin-top:12px;box-shadow:none"><div class="small muted">Detected pages</div>${state.modal.items.map((x,i)=>`<div class="list-item"><span>${i+1}. ${esc(x.name)}</span><span class="pill">${esc(x.detected.title)}</span></div>`).join('')}</div><div class="toolbar" style="margin-top:14px"><button class="btn primary" onclick="confirmUpload()">Confirm & Save</button><button class="btn ghost" onclick="window.closeModal();return false" type="button">Go Back</button></div></div></div>`;
+      return `<div class="modal-backdrop"><div class="modal"><div class="row between"><div><div class="eyebrow">OCR / AI REVIEW</div><h2 class="section-title" style="font-size:22px">Confirm page grouping</h2></div><button class="btn ghost" onclick="window.closeModal();return false" type="button">Cancel</button></div><p class="muted">OCR text is shown below. Pages are grouped by detected chapter heading/number when available; otherwise the selected chapter is used.</p><div class="list">${Object.entries(groups).map(([title,g])=>`<div class="list-item"><div><b>${esc(title)}</b><div class="small muted">${g.count} page(s) • ${esc(g.confidence)}</div></div><span class="pill ${g.confidence.startsWith('Detected from')?'green':'amber'}">${g.confidence.startsWith('Detected from')?'Detected':'Review'}</span></div>`).join('')}</div><div class="card" style="margin-top:12px;box-shadow:none"><div class="small muted">OCR results</div>${state.modal.items.map((x,i)=>`<div style="padding:12px 0;border-top:1px solid var(--line)"><div class="row between wrap"><b>${i+1}. ${esc(x.name)}</b><span class="pill ${x.ocr==='server OCR'?'green':'red'}">${x.ocr==='server OCR'?'OCR OK':'OCR ERROR'}</span></div><div class="small muted" style="margin-top:5px">${esc(x.detected.title)} • ${x.paragraphs?.length||0} paragraph(s)${x.ocrLanguage?` • ${esc(x.ocrLanguage)}`:''}</div>${x.ocrError?`<div class="small" style="margin-top:6px;color:#b91c1c">${esc(x.ocrError)}</div>`:''}<div class="demo" style="margin-top:8px;white-space:pre-wrap;max-height:180px;overflow:auto">${esc(x.text||'No OCR text returned')}</div></div>`).join('')}</div><div class="toolbar" style="margin-top:14px"><button class="btn primary" onclick="confirmUpload()">Confirm & Save</button><button class="btn ghost" onclick="window.closeModal();return false" type="button">Go Back</button></div></div></div>`;
     }
     if(state.modal.type==='chapterEdit')return `<div class="modal-backdrop"><div class="modal"><div class="row between"><h2 class="section-title">Edit Chapter</h2><button class="btn ghost" onclick="window.closeModal();return false" type="button">Close</button></div><div class="field"><label>CHAPTER NAME</label><input id="editChapterTitle" value="${esc(state.modal.title)}" /></div><button class="btn primary" onclick="saveChapterEdit('${state.modal.id}')">Save Changes</button></div></div>`;
     if(state.modal.type==='paragraphEdit')return `<div class="modal-backdrop"><div class="modal"><div class="row between"><h2 class="section-title">Edit Paragraph</h2><button class="btn ghost" onclick="window.closeModal();return false" type="button">Close</button></div><div class="field"><label>TITLE</label><input id="editPTitle" value="${esc(state.modal.title)}" /></div><div class="field"><label>TEXT</label><textarea id="editPText">${esc(state.modal.text)}</textarea></div><button class="btn primary" onclick="saveParagraphEdit('${state.modal.id}')">Save Changes</button></div></div>`;
@@ -523,68 +546,119 @@
   function saveChapterEdit(id){const ch=findBook().chapters.find(c=>c.id===id);if(!ch)return;const v=document.getElementById('editChapterTitle')?.value.trim();if(!v){toast('Chapter name cannot be empty');return}ch.title=v;saveDb();addAudit('Edit Chapter',id);state.modal=null;toast('Chapter updated');render()}
   function saveParagraphEdit(id){const p=findChapter().paragraphs.find(x=>x.id===id);if(!p)return;const t=document.getElementById('editPTitle')?.value.trim();const v=document.getElementById('editPText')?.value.trim();if(!t||!v){toast('Title and text are required');return}p.title=t;p.text=v;const pg=findChapter().pages.find(x=>x.id===p.pageId);if(pg)pg.extractedText=v;saveDb();addAudit('Edit Paragraph',id);state.modal=null;toast('Paragraph updated');render()}
 
+  function transcriptForMode(mode){
+    if(mode==='qualification')return state.readerTranscript||'';
+    if(mode==='speaking')return state.speakingTranscript||'';
+    if(mode==='chapter')return state.chapterAnswers?.[findChapter().paragraphs[state.chapterIndex]?.id]||'';
+    if(mode==='formula')return state.formulaTranscript||'';
+    if(mode==='qa-qualification')return document.getElementById('qaRead')?.value||'';
+    if(mode==='qa-answer')return document.getElementById('qaAnswer')?.value||'';
+    return '';
+  }
+  function putTranscriptForMode(mode,text){
+    const clean=String(text||'').trim();
+    if(mode==='qualification'){state.readerTranscript=clean;state.readerAccuracy=wordAccuracy(findParagraph().text,clean);const el=document.getElementById('qualText');if(el)el.value=clean;}
+    else if(mode==='speaking'){state.speakingTranscript=clean;const el=document.getElementById('speechText');if(el)el.value=clean;}
+    else if(mode==='chapter'){const id=findChapter().paragraphs[state.chapterIndex]?.id;if(id)state.chapterAnswers[id]=clean;const el=document.getElementById('chapterSpeech');if(el)el.value=clean;}
+    else if(mode==='formula'){state.formulaTranscript=clean;const el=document.getElementById('formulaSpeech');if(el)el.value=clean;}
+    else if(mode==='qa-qualification'){const el=document.getElementById('qaRead');if(el)el.value=clean;}
+    else if(mode==='qa-answer'){const el=document.getElementById('qaAnswer');if(el)el.value=clean;}
+  }
+  function normalizeSpeechText(v){return String(v||'').toLowerCase().normalize('NFKC').replace(/[.,!?;:।॥]+/g,' ').replace(/\s+/g,' ').trim();}
+  function appendSpeechUnique(existing,incoming){
+    const a=String(existing||'').trim(), b=String(incoming||'').trim();
+    if(!b)return a;
+    const na=normalizeSpeechText(a), nb=normalizeSpeechText(b);
+    if(!na)return b;
+    if(na===nb||na.endsWith(nb)||nb.startsWith(na))return nb.startsWith(na) && nb.length>na.length ? b : a;
+    const aw=na.split(' '), bw=nb.split(' ');
+    const max=Math.min(aw.length,bw.length,40);
+    for(let n=max;n>=2;n--){
+      if(aw.slice(-n).join(' ')===bw.slice(0,n).join(' ')){
+        const origWords=b.split(/\s+/);
+        return `${a} ${origWords.slice(n).join(' ')}`.trim();
+      }
+    }
+    if(nb.includes(na)&&nb.length>na.length)return b;
+    return `${a} ${b}`.trim();
+  }
+  let recognitionRunId=0;
   function startRecognition(mode){
     const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
     if(!SR){toast('Speech recognition is not supported in this browser. Use the text box fallback.');return}
     stopRecognition(false);
-    const r=new SR();
-    state.speakingLang=(findSubject().language==='Hindi'?'hi-IN':'en-IN');
-    r.lang=state.speakingLang;
-    // Final-only recognition prevents Chrome from repeatedly writing interim text into the box.
-    r.interimResults=false;
-    r.continuous=true;
-    r.maxAlternatives=1;
-    r._easywayMode=mode;
-    r._easywayManualStop=false;
-    r._easywayFinal='';
-    r._easywayLastFinalKey='';
-    r._easywayLastFinalAt=0;
-    state.speakingListening=true;
-    state.recognition=r;
-    r.onresult=e=>{
-      for(let i=e.resultIndex;i<e.results.length;i++){
-        if(!e.results[i].isFinal) continue;
-        const part=(e.results[i][0]?.transcript||'').trim();
-        if(!part) continue;
-        const key=part.toLowerCase().replace(/[.,!?;:।॥]+/g,' ').replace(/\s+/g,' ').trim();
-        const now=Date.now();
-        // Mobile Chrome can resend the same final phrase around a pause/restart.
-        if(key===r._easywayLastFinalKey && now-r._easywayLastFinalAt<2500) continue;
-        r._easywayLastFinalKey=key;
-        r._easywayLastFinalAt=now;
-        r._easywayFinal=(r._easywayFinal?`${r._easywayFinal} `:'')+part;
+    state.speechWanted=true;
+    const runId=++recognitionRunId;
+    const launch=()=>{
+      if(!state.speechWanted||runId!==recognitionRunId)return;
+      const r=new SR();
+      const subj=findSubject();
+      state.speakingLang=(subj?.language==='Hindi'?'hi-IN':'en-IN');
+      r.lang=state.speakingLang;
+      r.interimResults=true;
+      r.continuous=true;
+      r.maxAlternatives=1;
+      r._easywayManualStop=false;
+      r._easywayMode=mode;
+      r._easywayRestartTimer=null;
+      r._easywayLastResultKey='';
+      r._easywayLastResultAt=0;
+      state.speakingListening=true;
+      state.recognition=r;
+      let sessionBase=transcriptForMode(mode);
+      let restartCount=0;
+      const scheduleRestart=()=>{
+        if(!state.speechWanted||state.recognition!==r||r._easywayManualStop)return;
+        clearTimeout(r._easywayRestartTimer);
+        const delay=Math.min(1200,180+restartCount*120); restartCount+=1;
+        r._easywayRestartTimer=setTimeout(()=>{if(state.speechWanted&&state.recognition===r&&!r._easywayManualStop)launchReplacement()},delay);
+      };
+      const launchReplacement=()=>{
+        if(!state.speechWanted||state.recognition!==r||r._easywayManualStop)return;
+        // Build a fresh SpeechRecognition object after silence/end. This avoids Chrome mobile
+        // replaying earlier final results when the same object is restarted.
+        try{r.onresult=r.onerror=r.onend=null;r.stop()}catch{}
+        state.recognition=null;
+        launch();
+      };
+      r.onresult=e=>{
+        let changed=false;
+        for(let i=e.resultIndex;i<e.results.length;i++){
+          const res=e.results[i];
+          const part=String(res?.[0]?.transcript||'').trim();
+          if(!part)continue;
+          if(!res.isFinal)continue;
+          const key=normalizeSpeechText(part);
+          const now=Date.now();
+          if(key && key===r._easywayLastResultKey && now-r._easywayLastResultAt<10000)continue;
+          r._easywayLastResultKey=key;r._easywayLastResultAt=now;
+          const next=appendSpeechUnique(sessionBase,part);
+          changed = changed || next!==sessionBase;
+          sessionBase=next;
+        }
+        if(changed)putTranscriptForMode(mode,sessionBase);
+      };
+      r.onerror=e=>{
+        if(!state.speechWanted||state.recognition!==r||r._easywayManualStop)return;
+        const fatal=['not-allowed','service-not-allowed','language-not-supported'].includes(e.error);
+        if(fatal){state.speechWanted=false;state.speakingListening=false;state.recognition=null;toast(`Mic error: ${e.error||'unknown'}`);render();return;}
+        scheduleRestart();
+      };
+      r.onend=()=>{
+        if(!state.speechWanted||state.recognition!==r||r._easywayManualStop)return;
+        scheduleRestart();
+      };
+      try{r.start()}catch(e){
+        if(state.speechWanted&&state.recognition===r)scheduleRestart();
       }
-      const text=r._easywayFinal.trim();
-      if(!text)return;
-      if(mode==='qualification'){state.readerTranscript=text;state.readerAccuracy=wordAccuracy(findParagraph().text,text);const el=document.getElementById('qualText');if(el)el.value=text;}
-      else if(mode==='speaking'){state.speakingTranscript=text;const el=document.getElementById('speechText');if(el)el.value=text;}
-      else if(mode==='chapter'){const el=document.getElementById('chapterSpeech');if(el)el.value=text;state.chapterAnswers[findChapter().paragraphs[state.chapterIndex]?.id]=text;}
-      else if(mode==='formula'){state.formulaTranscript=text;const el=document.getElementById('formulaSpeech');if(el)el.value=text;}
-      else if(mode==='qa-qualification'){const el=document.getElementById('qaRead');if(el)el.value=text;}
-      else if(mode==='qa-answer'){const el=document.getElementById('qaAnswer');if(el)el.value=text;}
     };
-    r.onerror=e=>{
-      const recoverable=['no-speech','audio-capture','network','aborted'].includes(e.error);
-      if(recoverable && !r._easywayManualStop){
-        // Keep the current UI/input stable while Chrome recovers from a silence or transient error.
-        setTimeout(()=>{if(state.recognition===r&&!r._easywayManualStop){try{r.start();state.speakingListening=true}catch{}}},350);
-        return;
-      }
-      if(state.recognition===r){state.speakingListening=false;state.recognition=null;toast(`Mic error: ${e.error||'unknown'}`);render()}
-    };
-    r.onend=()=>{
-      if(r._easywayManualStop || state.recognition!==r)return;
-      // Do not call render() here: rerendering the page during recognition destroys focused inputs.
-      setTimeout(()=>{
-        if(state.recognition!==r||r._easywayManualStop)return;
-        try{r.start();state.speakingListening=true}catch{}
-      },350);
-    };
-    try{r.start();render()}catch(e){state.speakingListening=false;state.recognition=null;toast('Microphone could not start')}
+    launch();
   }
   function stopRecognition(shouldRender=true){
+    state.speechWanted=false;
+    ++recognitionRunId;
     const r=state.recognition;
-    if(r){r._easywayManualStop=true;try{r.stop()}catch{}try{r.abort()}catch{}}
+    if(r){r._easywayManualStop=true;clearTimeout(r._easywayRestartTimer);try{r.onend=null;r.onerror=null;r.stop()}catch{}try{r.abort()}catch{}}
     state.speakingListening=false;state.recognition=null;
     if(shouldRender)render();
   }
@@ -644,7 +718,10 @@
 
   window.go=go;window.sharedSnapshotView=sharedSnapshotView;window.loginSubmit=loginSubmit;window.logout=logout;window.openNewSubject=openNewSubject;window.openNewBook=openNewBook;window.createSubject=createSubject;window.createBook=createBook;window.deleteSubject=deleteSubject;window.deleteBook=deleteBook;window.openRegister=openRegister;window.openForgot=openForgot;window.closeModal=closeModal;window.stopRecognition=stopRecognition;window.registerStudent=registerStudent;window.resetPassword=resetPassword;window.openBook=openBook;window.openChapter=openChapter;window.viewPage=viewPage;window.savePageText=savePageText;window.deletePage=deletePage;window.deleteParagraph=deleteParagraph;window.deleteChapter=deleteChapter;window.editChapter=editChapter;window.editParagraph=editParagraph;window.saveChapterEdit=saveChapterEdit;window.saveParagraphEdit=saveParagraphEdit;window.openLesson=openLesson;window.rereadParagraph=rereadParagraph;window.calculateQualification=calculateQualification;window.useTypedForQualification=useTypedForQualification;window.toggleQualificationMic=toggleQualificationMic;window.toggleSpeakingMic=toggleSpeakingMic;window.submitSpeakingTest=submitSpeakingTest;window.resetSpeakingText=resetSpeakingText;window.startChapterTest=startChapterTest;window.toggleChapterMic=toggleChapterMic;window.checkChapterParagraph=checkChapterParagraph;window.openQA=openQA;window.qualifyQA=qualifyQA;window.submitQA=submitQA;window.toggleQAMic=toggleQAMic;window.openFormula=openFormula;window.submitFormula=submitFormula;window.toggleFormulaMic=toggleFormulaMic;window.processUpload=processUpload;window.confirmUpload=confirmUpload;window.shareContent=shareContent;window.sendShare=sendShare;window.acceptShare=acceptShare;window.rejectShare=rejectShare;window.openShared=openShared;window.saveProfile=saveProfile;window.downloadBackup=downloadBackup;window.importBackupFile=importBackupFile;window.restoreBackup=restoreBackup;window.changePassword=changePassword;window.submitFeedback=submitFeedback;window.loadFeedback=loadFeedback;window.rankings=rankings;window.setFilter=setFilter;window.createGroupSession=createGroupSession;window.joinGroupSession=joinGroupSession;window.refreshGroupSession=refreshGroupSession;window.submitGroupTurn=submitGroupTurn;window.groupMic=groupMic;window.endGroupSession=endGroupSession;window.startAntiCheat=startAntiCheat;window.stopAntiCheat=stopAntiCheat;window.captureAntiCheat=captureAntiCheat;
 
-  // Start a PWA service worker when available.
-  if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js').catch(()=>{});}
+  // Keep the app shell fresh. Unregistering older workers once prevents stale cached JS/CSS from surviving a release.
+  if('serviceWorker' in navigator){
+    navigator.serviceWorker.getRegistrations().then(rs=>Promise.all(rs.map(r=>r.unregister()))).catch(()=>{});
+    if('caches' in window) caches.keys().then(keys=>Promise.all(keys.map(k=>caches.delete(k)))).catch(()=>{});
+  }
   render();
 })();

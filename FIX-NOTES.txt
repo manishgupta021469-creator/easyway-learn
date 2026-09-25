@@ -1,7 +1,25 @@
-Easyway Learn V62
+Easyway Learn V64 — all-in-one final fix (2026-09-25)
 
-Fix: Create Subject / Create Book typing reliability.
+1. CREATE SUBJECT / CREATE BOOK
+   - Replaced the fragile custom name-entry modal with native mobile/desktop prompt dialogs for subject/book names.
+   - Existing modal Close/Cancel/Go Back buttons remain direct and do not depend on delegated handlers.
 
-The create Subject and create Book actions now use the browser's native prompt input instead of the custom modal input. This bypasses mobile speech-recognition/render/focus conflicts that could prevent keyboard text entry. Subject and Book records are saved normally to the existing database structure, with audit entries and normal toast/render flow.
+2. READING / SPEAKING MIC
+   - Speech recognition now launches a fresh recognition session after browser silence/end instead of restarting the same recognition object.
+   - The transcript is retained between sessions and overlap-aware merging prevents one spoken line from being appended repeatedly.
+   - Manual Stop cancels all restart timers and prevents automatic restart.
+   - Reading qualification and Speaking retests remain separate; Read This Paragraph Again stays available after an unlock.
 
-OCR changes from V61 are retained.
+3. PAGE UPLOAD / OCR
+   - Fixed the missing frontend ocrMime() helper that previously caused file OCR to fail before the request reached the server.
+   - JPEG/PNG/WebP/PDF MIME is inferred from both browser type and filename.
+   - OCR requests use eng+hin; the server normalizes language aliases and only uses languages installed in the image.
+   - PDF files are converted and OCRed page-by-page with Poppler + Tesseract.
+   - OCR chapter heading detection and paragraph splitting are more tolerant, and successful OCR always supplies paragraph blocks for saving.
+
+4. CACHE
+   - Service worker is v64 and network-first for the application shell.
+   - /healthz is provided for Render health checks.
+   - The app unregisters previous workers and clears old Cache Storage once, preventing an old JavaScript/CSS release from masking the fix.
+
+Deploy all root files together: app.js, server.js, styles.css, sw.js, Dockerfile, index.html, FIX-NOTES.txt.
