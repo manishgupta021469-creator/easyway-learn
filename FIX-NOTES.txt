@@ -1,14 +1,11 @@
-Easyway Learn v58 - Modal/Input + cache fix
+Easyway Learn V61 — OCR pipeline fix
 
-Fixes:
-- Book/Subject/Chapter/Paragraph modal Close/Cancel buttons now use delegated event handling and work even if inline event attributes are blocked.
-- Closing a modal stops speech recognition and removes stale modal overlays.
-- Focusing a modal input/textarea/select stops any active recognition so typing is never interfered with by microphone recovery.
-- Added sw.js v58 with network-first loading for app.js/index/styles/sw to prevent stale service-worker JavaScript from hiding fixes after Render deploys.
+1. Replaced OCR upload MIME detection so Android/browser files with missing MIME are recognized from filename.
+2. OCR now explicitly uses installed eng+hin languages and verifies Tesseract is available.
+3. OCR tries Tesseract PSM 6, 3 and 11 and keeps the strongest text result.
+4. PDFs are converted page-by-page with Poppler.
+5. Server returns the actual OCR failure reason instead of silently hiding it.
+6. Upload review now shows OCR failure text and reports partial failures.
+7. Increased JSON/OCR asset limits to 25 MB / 15 MB.
 
-Replace at repository root:
-- app.js
-- server.js
-- Dockerfile
-- sw.js
-Commit once: Fix modal buttons, book typing and service worker cache
+Replace app.js, server.js, Dockerfile, styles.css and sw.js at repo root, then commit together.

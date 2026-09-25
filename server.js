@@ -19,8 +19,8 @@ const USE_SQLITE = process.env.EASYWAY_DB !== 'json' && !!DatabaseSync;
 const ASSET_DIR = path.join(DATA_DIR, 'assets');
 const SESSION_TTL_MS = 1000 * 60 * 60 * 12;
 const sessions = new Map();
-const MAX_JSON_BYTES = 15_000_000;
-const MAX_ASSET_BYTES = 10_000_000;
+const MAX_JSON_BYTES = 25_000_000;
+const MAX_ASSET_BYTES = 15_000_000;
 const RATE_WINDOW_MS = 60_000;
 const RATE_LIMIT = 120;
 const MAX_REQUEST_BYTES = 16_000_000;
@@ -208,22 +208,33 @@ async function runOCR(raw,mime,lang){
   const requested=safeLang.split('+').filter(Boolean);
   const usable=requested.filter(x=>available.includes(x));
   safeLang=usable.length?usable.join('+'):(available.includes('eng')?'eng':(available[0]||'eng'));
+  if(!available.length) throw new Error('Tesseract is not installed on the server');
+  if(!safeLang) throw new Error('No usable OCR language is installed');
   const work=fs.mkdtempSync(path.join(os.tmpdir(),'easyway-ocr-'));
-  const input=path.join(work,mime==='application/pdf'?'page.pdf':'page');
+  const input=path.join(work,mime==='application/pdf'?'input.pdf':'input');
   try{
-    fs.writeFileSync(input,raw); let images=[];
+    fs.writeFileSync(input,raw);
+    let images=[];
     if(mime==='application/pdf'){
       const prefix=path.join(work,'page');
-      execFileSync('pdftoppm',['-png','-r','220',input,prefix],{timeout:60000});
+      execFileSync('pdftoppm',['-png','-r','220',input,prefix],{timeout:90000});
       images=fs.readdirSync(work).filter(x=>/^page-\d+\.png$/.test(x)).sort((a,b)=>Number(a.match(/\d+/)[0])-Number(b.match(/\d+/)[0])).map(x=>path.join(work,x));
+      if(!images.length) throw new Error('PDF could not be converted to images');
     }else images=[input];
-    let textParts=[];
+    const textParts=[];
     for(const image of images){
-      const out=execFileSync('tesseract',[image,'stdout','-l',safeLang,'--psm','6'],{timeout:45000,maxBuffer:4_000_000}).toString('utf8').trim();
-      if(out)textParts.push(out);
+      let best='';
+      for(const psm of ['6','3','11']){
+        try{
+          const out=execFileSync('tesseract',[image,'stdout','-l',safeLang,'--psm',psm],{timeout:60000,maxBuffer:6_000_000}).toString('utf8').trim();
+          if(out.length>best.length) best=out;
+        }catch(e){ if(psm==='6' && !best) throw e; }
+      }
+      if(best) textParts.push(best);
     }
     const text=textParts.join('\n\n').trim();
-    return {text,paragraphs:splitParagraphs(text).map((x,i)=>({id:`OCR-P-${i+1}`,title:`Detected Paragraph ${i+1}`,text:x})),chapterDetection:chapterFromOCR(text)};
+    if(!text) throw new Error(`OCR returned no readable text (languages: ${safeLang})`);
+    return {text,paragraphs:splitParagraphs(text),chapterDetection:chapterFromOCR(text),ocrLanguage:safeLang,pageCount:images.length};
   } finally {try{fs.rmSync(work,{recursive:true,force:true})}catch{}}
 }
 
@@ -460,7 +471,7 @@ async function handle(req,res) {
         const result=await runOCR(raw,mime,lang);
         audit(student,'OCR Processing',`${mime}; ${result.text.length} chars; ${result.paragraphs.length} paragraph blocks`); writeStore(store);
         return json(res,200,{ok:true,...result,paragraphs:result.paragraphs.map((text,i)=>({id:`OCR-${i+1}`,title:`Detected Paragraph ${i+1}`,text}))});
-      } catch(e){ return json(res,422,{error:'OCR processing failed; review or enter extracted text manually'}); }
+      } catch(e){ return json(res,422,{error:`OCR processing failed: ${e.message||'unknown OCR error'}`}); }
     }
     if (req.method==='POST' && url.pathname==='/api/ocr-batch') {
       const b=await body(req); const items=Array.isArray(b.items)?b.items:[]; const lang=String(b.lang||'eng');
@@ -472,7 +483,7 @@ async function handle(req,res) {
         if(!['image/jpeg','image/png','image/webp','application/pdf'].includes(mime)) { results.push({index:i,name:String(it.name||`page-${i+1}`),ok:false,error:'Unsupported file type'}); continue; }
         const raw=Buffer.from(data,'base64'); if(!raw.length||raw.length>MAX_ASSET_BYTES){results.push({index:i,name:String(it.name||`page-${i+1}`),ok:false,error:'File is empty or exceeds 10MB'});continue;}
         try{const r=await runOCR(raw,mime,lang); results.push({index:i,name:String(it.name||`page-${i+1}`),ok:true,text:r.text,paragraphs:r.paragraphs.map((text,n)=>({id:`OCR-${i+1}-${n+1}`,title:`Detected Paragraph ${n+1}`,text})),chapterDetection:r.chapterDetection});}
-        catch(e){results.push({index:i,name:String(it.name||`page-${i+1}`),ok:false,error:'OCR processing failed; review manually'});}
+        catch(e){results.push({index:i,name:String(it.name||`page-${i+1}`),ok:false,error:`OCR processing failed: ${e.message||'unknown OCR error'}`});}
       }
       const chapterMap=new Map();
       for(const r of results.filter(x=>x.ok)){const key=r.chapterDetection.number?`chapter-${r.chapterDetection.number}`:`fallback-${r.index}`;const g=chapterMap.get(key)||{key,title:r.chapterDetection.title,order:r.chapterDetection.number||null,confidence:r.chapterDetection.confidence,pages:[]};g.pages.push(r.index);chapterMap.set(key,g);}
