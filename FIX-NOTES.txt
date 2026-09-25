@@ -1,10 +1,18 @@
-Easyway Learn V66 – OCR final deployment fix
+Easyway Learn V67 — OCR Definitive / Clean Root Package
 
-1. OCR is now explicitly session-independent in the browser: page OCR is attempted even when the Student session token is missing or expired.
-2. The server exposes /api/ocr and /api/ocr-batch before the authenticated student routes.
-3. Added GET /api/ocr-status to verify Tesseract availability and Hindi/English language packs.
-4. OCR errors are shown verbatim instead of being replaced with a misleading authentication message.
-5. Normal page saving, assets, student state and assessments remain authenticated.
-6. English + Hindi OCR, chapter detection and paragraph extraction remain enabled.
+What was fixed in one pass:
+1. OCR routes are defined only once, before authentication. The old duplicate authenticated /api/ocr and /api/ocr-batch handlers were removed.
+2. Browser OCR upload uses a dedicated stateless fetch that does NOT attach the Student session token. Expired login cannot produce "Authentication required" for OCR.
+3. Added no-cache OCR requests and OPTIONS handling.
+4. OCR supports English + Hindi, image and PDF input, with Tesseract PSM 6/3/11 candidates.
+5. PDF pages are rendered page-by-page with Poppler.
+6. OCR chapter and paragraph detection remains enabled.
+7. Raised bounded OCR request/file limits for real textbook PDFs.
+8. Clean deployment package: no database files, WAL/SHM, PID or server logs are included.
+9. Service-worker cache bumped to v67.
+10. Docker installs Tesseract English/Hindi and Poppler without the failing fonts-deva-core package.
 
-Deploy app.js and server.js together from the repository root. Commit both in one commit and wait for Render to show Live.
+IMPORTANT:
+Copy these files directly into the Render-connected repository ROOT (not inside a v67pkg folder), then commit all files together.
+
+Verification endpoint after deploy: open /api/ocr-status on the same Render URL. It should return ok:true and show eng:true, hin:true.

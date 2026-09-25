@@ -110,6 +110,7 @@
   function serverToken(){return localStorage.getItem('easywayServerToken')||'';}
   function scheduleServerSync(){if(!API_BASE||!state.currentId||!serverToken())return;clearTimeout(syncTimer);syncTimer=setTimeout(()=>syncToServer().catch(()=>{}),600)}
   async function apiFetch(path,opts={}){if(!API_BASE)throw Error('API unavailable');const h={'content-type':'application/json',...(opts.headers||{})};const t=serverToken();if(t)h.authorization='Bearer '+t;const r=await fetch(API_BASE+path,{...opts,headers:h});const d=await r.json().catch(()=>({}));if(!r.ok)throw Error(d.error||('HTTP '+r.status));return d}
+  async function ocrFetch(path,payload){if(!API_BASE)throw Error('OCR server is unavailable');const r=await fetch(API_BASE+path,{method:'POST',headers:{'content-type':'application/json','cache-control':'no-store','x-easyway-ocr':'1'},cache:'no-store',body:JSON.stringify(payload)});const d=await r.json().catch(()=>({error:'Invalid OCR server response'}));if(!r.ok)throw Error(d.error||(`OCR HTTP ${r.status}`));return d}
   function remoteState(){return {version:43,settings:db.settings,subjects:db.subjects,progress:db.progress,history:db.history,shares:db.shares,audit:db.audit,usage:db.usage};}
   async function serverAssessment(type,targetId,transcript){if(!API_BASE||!serverToken())throw Error('Backend unavailable');const r=await apiFetch('/assessments',{method:'POST',body:JSON.stringify({type,targetId,transcript})});return r.attempt;}
   async function serverChapterAssessment(targetId,parts){if(!API_BASE||!serverToken())throw Error('Backend unavailable');const r=await apiFetch('/assessments',{method:'POST',body:JSON.stringify({type:'Chapter',targetId,parts})});return r.attempt;}
@@ -357,14 +358,31 @@
             // prevent document text extraction. Saving the page still requires the normal
             // authenticated flow below.
             const data=await blobToDataUrl(file);
-            const r=await apiFetch('/ocr',{method:'POST',body:JSON.stringify({mime:ocrMime(file),data:String(data).split(',')[1]||'',lang:'eng+hin'})});
+            const r=await ocrFetch('/ocr',{mime:ocrMime(file),data:String(data).split(',')[1]||'',lang:'eng+hin'});
             rawText=String(r.text||'').trim();
             const detectedParagraphs=Array.isArray(r.paragraphs)?r.paragraphs:[];
             if(r.chapterDetection?.title&&r.chapterDetection?.confidence==='Detected from OCR heading') det={title:r.chapterDetection.title,order:r.chapterDetection.number,confidence:r.chapterDetection.confidence};
             items.push({name:file.name,text:rawText||'No text detected. You can correct the text below before saving.',paragraphs:detectedParagraphs,detected:det,file,ocr:'server OCR',ocrError:'',ocrLanguage:r.ocrLanguage||'',pageCount:r.pageCount||1});
             toast(`OCR ${i+1}/${files.length}: ${detectedParagraphs.length} paragraph(s)`);
             continue;
-          }catch(e){ocrError=e?.message||'processing failed'}
+          }catch(e){
+            ocrError=e?.message||'processing failed';
+            if(/authentication required|unauthorized|401/i.test(ocrError)) ocrError='Deployed OCR endpoint is still protected by login. Replace the repo-root server.js with V67 and redeploy Render.';
+            // Retry once through the same stateless OCR endpoint. This deliberately never uses
+            // the student's session token, so an expired login cannot turn OCR into a 401.
+            try{
+              if(API_BASE && /authentication required|unauthorized|401/i.test(ocrError)){
+                const data=await blobToDataUrl(file);
+                const r=await ocrFetch('/ocr',{mime:ocrMime(file),data:String(data).split(',')[1]||'',lang:'eng+hin'});
+                rawText=String(r.text||'').trim();
+                const detectedParagraphs=Array.isArray(r.paragraphs)?r.paragraphs:[];
+                if(r.chapterDetection?.title)det={title:r.chapterDetection.title,order:r.chapterDetection.number,confidence:r.chapterDetection.confidence||'Detected from OCR heading'};
+                items.push({name:file.name,text:rawText||'No text detected. You can correct the text below before saving.',paragraphs:detectedParagraphs,detected:det,file,ocr:'server OCR',ocrError:'',ocrLanguage:r.ocrLanguage||'',pageCount:r.pageCount||1});
+                toast(`OCR ${i+1}/${files.length}: ${detectedParagraphs.length} paragraph(s)`);
+                continue;
+              }
+            }catch(retryErr){ocrError=retryErr?.message||ocrError}
+          }
         }else ocrError='OCR server is unavailable. Open the deployed app over HTTPS and try again.';
         items.push({name:file.name,text:`OCR failed: ${ocrError||'processing failed'}. You can correct the text below before saving.`,paragraphs:[],detected:det,file,ocr,ocrError});
       }

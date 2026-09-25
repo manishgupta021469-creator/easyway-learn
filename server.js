@@ -19,8 +19,8 @@ const USE_SQLITE = process.env.EASYWAY_DB !== 'json' && !!DatabaseSync;
 const ASSET_DIR = path.join(DATA_DIR, 'assets');
 const SESSION_TTL_MS = 1000 * 60 * 60 * 12;
 const sessions = new Map();
-const MAX_JSON_BYTES = 32_000_000;
-const MAX_ASSET_BYTES = 15_000_000;
+const MAX_JSON_BYTES = 48_000_000;
+const MAX_ASSET_BYTES = 30_000_000;
 const RATE_WINDOW_MS = 60_000;
 const RATE_LIMIT = 120;
 const MAX_REQUEST_BYTES = 32_000_000;
@@ -234,7 +234,7 @@ async function runOCR(raw,mime,lang){
     const textParts=[];
     for(const image of images){
       const candidates=[];
-      for(const psm of ['6','11']){
+      for(const psm of ['6','3','11']){
         try{
           const out=execFileSync('tesseract',[image,'stdout','-l',safeLang,'--oem','1','--psm',psm],{timeout:60000,maxBuffer:6_000_000}).toString('utf8').trim();
           if(out)candidates.push(out);
@@ -326,6 +326,8 @@ async function handle(req,res) {
   if (req.method === 'GET' && (url.pathname === '/healthz' || url.pathname === '/api/health')) return json(res,200,{ok:true,service:'easyway-learn-backend',version:APP_VERSION,node:process.version,database:USE_SQLITE?'sqlite':'json',uptimeSeconds:Math.floor(process.uptime()),time:new Date().toISOString()});
   if (!url.pathname.startsWith('/api/')) return serveStatic(req,res);
 
+  if (req.method==='OPTIONS') { securityHeaders(res); res.writeHead(204, {'cache-control':'no-store'}); return res.end(); }
+
   try {
     const store=readStore();
     store.groupSessions ||= {};
@@ -372,7 +374,7 @@ async function handle(req,res) {
         if(!['image/jpeg','image/png','image/webp','application/pdf'].includes(mime)) throw new Error('OCR supports JPEG, PNG, WebP and PDF');
         if(!data) throw new Error('Image/PDF data required');
         const raw=Buffer.from(data,'base64'); if(!raw.length) throw new Error('Image/PDF data is invalid');
-        if(raw.length>MAX_ASSET_BYTES) throw new Error('OCR input exceeds 10MB');
+        if(raw.length>MAX_ASSET_BYTES) throw new Error('OCR input exceeds 30MB');
         return runOCR(raw,mime,lang);
       };
       if(url.pathname==='/api/ocr') {
@@ -519,35 +521,6 @@ async function handle(req,res) {
       if(!/^audio\//.test(mime)) return json(res,415,{error:'Audio MIME type required'});
       try { const result=await transcribeAudio(raw,mime,language); audit(student,'Speech Transcription',`${mime}; ${result.text.length} chars; model=${result.model}`); writeStore(store); return json(res,200,{ok:true,...result}); }
       catch(e){ return json(res,503,{error:e.message.includes('not configured')?'Speech provider is not configured on this server':'Speech transcription temporarily unavailable'}); }
-    }
-    if (req.method==='POST' && url.pathname==='/api/ocr') {
-      const b=await body(req);
-      const mime=String(b.mime||''); const data=String(b.data||''); const lang=String(b.lang||'eng');
-      if(!data) return json(res,400,{error:'Image/PDF data required'});
-      if(!['image/jpeg','image/png','image/webp','application/pdf'].includes(mime)) return json(res,415,{error:'OCR supports JPEG, PNG, WebP and PDF'});
-      const raw=Buffer.from(data,'base64'); if(raw.length>MAX_ASSET_BYTES) return json(res,413,{error:'OCR input exceeds 10MB'});
-      try {
-        const result=await runOCR(raw,mime,lang);
-        audit(student,'OCR Processing',`${mime}; ${result.text.length} chars; ${result.paragraphs.length} paragraph blocks`); writeStore(store);
-        return json(res,200,{ok:true,...result,paragraphs:result.paragraphs.map((text,i)=>({id:`OCR-${i+1}`,title:`Detected Paragraph ${i+1}`,text}))});
-      } catch(e){ return json(res,422,{error:`OCR processing failed: ${e.message||'unknown OCR error'}`}); }
-    }
-    if (req.method==='POST' && url.pathname==='/api/ocr-batch') {
-      const b=await body(req); const items=Array.isArray(b.items)?b.items:[]; const lang=String(b.lang||'eng');
-      if(!items.length) return json(res,400,{error:'At least one OCR item is required'});
-      if(items.length>20) return json(res,413,{error:'OCR batch is limited to 20 pages'});
-      const results=[];
-      for(let i=0;i<items.length;i++){
-        const it=items[i]||{}; const mime=String(it.mime||''); const data=String(it.data||'');
-        if(!['image/jpeg','image/png','image/webp','application/pdf'].includes(mime)) { results.push({index:i,name:String(it.name||`page-${i+1}`),ok:false,error:'Unsupported file type'}); continue; }
-        const raw=Buffer.from(data,'base64'); if(!raw.length||raw.length>MAX_ASSET_BYTES){results.push({index:i,name:String(it.name||`page-${i+1}`),ok:false,error:'File is empty or exceeds 10MB'});continue;}
-        try{const r=await runOCR(raw,mime,lang); results.push({index:i,name:String(it.name||`page-${i+1}`),ok:true,text:r.text,paragraphs:r.paragraphs.map((text,n)=>({id:`OCR-${i+1}-${n+1}`,title:`Detected Paragraph ${n+1}`,text})),chapterDetection:r.chapterDetection});}
-        catch(e){results.push({index:i,name:String(it.name||`page-${i+1}`),ok:false,error:`OCR processing failed: ${e.message||'unknown OCR error'}`});}
-      }
-      const chapterMap=new Map();
-      for(const r of results.filter(x=>x.ok)){const key=r.chapterDetection.number?`chapter-${r.chapterDetection.number}`:`fallback-${r.index}`;const g=chapterMap.get(key)||{key,title:r.chapterDetection.title,order:r.chapterDetection.number||null,confidence:r.chapterDetection.confidence,pages:[]};g.pages.push(r.index);chapterMap.set(key,g);}
-      audit(student,'OCR Batch Processing',`${results.length} pages; ${results.filter(x=>x.ok).length} successful`); writeStore(store);
-      return json(res,200,{ok:true,results,groups:[...chapterMap.values()]});
     }
     if (req.method==='POST' && url.pathname==='/api/assessments') {
       const b=await body(req);
