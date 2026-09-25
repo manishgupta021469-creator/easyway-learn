@@ -1,17 +1,7 @@
-Easyway Learn v69 — Demo removal + persistent student/document data hardening
+Easyway Learn V71 — Permanent Student ID button definitive fix
 
-1. Removed all built-in demo/sample student accounts, demo textbook subjects, sample pages, sample Q&A/formula content and demo share requests.
-2. Older browser data is migrated without deleting user-created content; only the known legacy demo records are removed.
-3. New Student IDs start with an empty learning library. No demo content is injected after registration or login.
-4. Student learning state is saved to the authenticated Student ID on the server, including subjects, books, chapters, pages, OCR/extracted text, paragraphs, progress, scores/history, shares and audit data.
-5. Server state writes are atomic at the application-store level and the browser sync queue now re-runs after an edit arrives while a previous sync is still in progress, preventing stale writes from silently dropping later edits.
-6. Server reads now restore the complete saved snapshot instead of selectively overwriting only non-empty arrays, so saved empty/non-empty fields remain consistent.
-7. Uploaded page image/PDF assets continue to be stored in IndexedDB and uploaded to the authenticated server asset store; OCR text is stored in the learning state.
-8. Empty new accounts have a proper first-use dashboard instead of relying on demo content.
-9. OCR from v68 is retained: text PDFs use pdftotext first; scanned PDFs/images use Tesseract with English + Hindi support.
-
-IMPORTANT DEPLOYMENT STORAGE NOTE
-The application is configured to persist server data under EASYWAY_DATA_DIR. Render Free web services have an ephemeral filesystem, so SQLite/files uploaded to the service can be lost after a restart, spin-down or redeploy. For true server-side persistence on Render, use a Render Postgres datastore or attach a persistent disk to a paid web service and set EASYWAY_DATA_DIR to its mount path (for example /var/data).
-
-5. Fixed permanent Student ID registration validation mismatch: client and server now accept the same 4–30 character Student ID format.
-6. Registration errors are returned directly instead of silently failing.
+1. Fixed the missing register modal branch: openRegister() previously set state.modal='register', but editModal() had no register case, so the modal root rendered empty and the Create Permanent ID flow appeared not to work.
+2. The registration modal now renders correctly with Student ID, name, password, class, section, school and optional email fields.
+3. Added a mobile-safe delegated click fallback for the Create Permanent ID button.
+4. Existing OCR, document upload, student data persistence, scores/history/progress and other learning features are retained.
+5. Demo material removal remains unchanged.
