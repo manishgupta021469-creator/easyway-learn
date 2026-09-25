@@ -1,19 +1,14 @@
-Easyway Learn v56 Render build fix
+Easyway Learn v58 - Modal/Input + cache fix
 
-This package keeps the v55 speech + OCR changes and fixes the Render Docker build failure.
+Fixes:
+- Book/Subject/Chapter/Paragraph modal Close/Cancel buttons now use delegated event handling and work even if inline event attributes are blocked.
+- Closing a modal stops speech recognition and removes stale modal overlays.
+- Focusing a modal input/textarea/select stops any active recognition so typing is never interfered with by microphone recovery.
+- Added sw.js v58 with network-first loading for app.js/index/styles/sw to prevent stale service-worker JavaScript from hiding fixes after Render deploys.
 
-Root cause found in Render logs:
-- Docker build failed during apt-get install because the Dockerfile requested `fonts-deva-core`.
-- Debian Bookworm provides the Devanagari font meta-package as `fonts-deva`; the font is not required by the OCR pipeline anyway.
-
-v56 Dockerfile installs only the required OCR/PDF packages:
-- tesseract-ocr (includes English data)
-- tesseract-ocr-hin (Hindi data)
-- poppler-utils (PDF page rendering)
-
-Upload/replace these files at the repository root:
+Replace at repository root:
 - app.js
 - server.js
 - Dockerfile
-
-Then commit once. Render should auto-deploy.
+- sw.js
+Commit once: Fix modal buttons, book typing and service worker cache
