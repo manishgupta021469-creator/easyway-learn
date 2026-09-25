@@ -26,7 +26,7 @@ const RATE_LIMIT = 120;
 const MAX_REQUEST_BYTES = 32_000_000;
 const MAX_AUDIO_BYTES = 15_000_000;
 const MAX_ANTICHEAT_BYTES = 1_500_000;
-const APP_VERSION = '0.64.0';
+const APP_VERSION = '0.66.0';
 const TRANSCRIBE_MODEL = process.env.OPENAI_TRANSCRIBE_MODEL || 'gpt-4o-mini-transcribe';
 const rateBuckets = new Map();
 
@@ -359,6 +359,11 @@ async function handle(req,res) {
     // browser has a stale/expired learning-session token. Content saving and all
     // student data APIs below still require authentication. A per-IP rate limit is
     // already applied at the top of this handler.
+    if (req.method==='GET' && url.pathname==='/api/ocr-status') {
+      const languages=installedTesseractLanguages();
+      return json(res,200,{ok:true,ocr:true,languages,eng:languages.includes('eng'),hin:languages.includes('hin'),version:APP_VERSION});
+    }
+
     if (req.method==='POST' && (url.pathname==='/api/ocr' || url.pathname==='/api/ocr-batch')) {
       if (req.headers['content-type'] && !req.headers['content-type'].toLowerCase().startsWith('application/json')) return json(res,415,{error:'JSON content required'});
       const b=await body(req);

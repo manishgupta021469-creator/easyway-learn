@@ -350,18 +350,22 @@
     if(files.length){
       for(let i=0;i<files.length;i++){
         const file=files[i]; let rawText=''; let det=detectChapterFromFilename(file?.name,fallback); let ocr='manual review'; let ocrError='';
-        if(API_BASE&&serverToken()){
+        if(API_BASE){
           try{
+            // OCR is intentionally session-independent. The server exposes /api/ocr before
+            // the authenticated student routes, so an expired/stale student token must not
+            // prevent document text extraction. Saving the page still requires the normal
+            // authenticated flow below.
             const data=await blobToDataUrl(file);
             const r=await apiFetch('/ocr',{method:'POST',body:JSON.stringify({mime:ocrMime(file),data:String(data).split(',')[1]||'',lang:'eng+hin'})});
             rawText=String(r.text||'').trim();
             const detectedParagraphs=Array.isArray(r.paragraphs)?r.paragraphs:[];
             if(r.chapterDetection?.title&&r.chapterDetection?.confidence==='Detected from OCR heading') det={title:r.chapterDetection.title,order:r.chapterDetection.number,confidence:r.chapterDetection.confidence};
-            items.push({name:file.name,text:rawText,paragraphs:detectedParagraphs,detected:det,file,ocr:'server OCR',ocrError:'',ocrLanguage:r.ocrLanguage||'',pageCount:r.pageCount||1});
+            items.push({name:file.name,text:rawText||'No text detected. You can correct the text below before saving.',paragraphs:detectedParagraphs,detected:det,file,ocr:'server OCR',ocrError:'',ocrLanguage:r.ocrLanguage||'',pageCount:r.pageCount||1});
             toast(`OCR ${i+1}/${files.length}: ${detectedParagraphs.length} paragraph(s)`);
             continue;
           }catch(e){ocrError=e?.message||'processing failed'}
-        }else ocrError='Secure server session is not active; sign in again before OCR.';
+        }else ocrError='OCR server is unavailable. Open the deployed app over HTTPS and try again.';
         items.push({name:file.name,text:`OCR failed: ${ocrError||'processing failed'}. You can correct the text below before saving.`,paragraphs:[],detected:det,file,ocr,ocrError});
       }
     }

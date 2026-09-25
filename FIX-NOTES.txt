@@ -1,19 +1,10 @@
-Easyway Learn V65 — OCR Authentication + PDF Preview Final Fix
+Easyway Learn V66 – OCR final deployment fix
 
-1. OCR AUTHENTICATION FIX
-   - /api/ocr and /api/ocr-batch are now stateless document-processing endpoints and no longer fail with “Authentication required” when a browser has an expired/stale learning-session token.
-   - Student data APIs and page-asset saving remain authenticated.
-   - Existing per-IP request rate limiting remains active.
+1. OCR is now explicitly session-independent in the browser: page OCR is attempted even when the Student session token is missing or expired.
+2. The server exposes /api/ocr and /api/ocr-batch before the authenticated student routes.
+3. Added GET /api/ocr-status to verify Tesseract availability and Hindi/English language packs.
+4. OCR errors are shown verbatim instead of being replaced with a misleading authentication message.
+5. Normal page saving, assets, student state and assessments remain authenticated.
+6. English + Hindi OCR, chapter detection and paragraph extraction remain enabled.
 
-2. OCR
-   - Hindi + English OCR remains supported through Tesseract.
-   - PDF pages are processed page-by-page with Poppler + Tesseract.
-   - Chapter detection and paragraph extraction remain enabled.
-
-3. PDF PAGE PREVIEW
-   - CSP now explicitly permits blob: PDF iframe previews, fixing “This content is blocked” for locally stored PDF pages.
-
-4. VALIDATION
-   - app.js/server.js syntax checked.
-   - Unauthenticated POST /api/ocr tested locally: HTTP 200, OCR text returned, chapter heading detected, paragraph returned.
-   - ZIP integrity checked.
+Deploy app.js and server.js together from the repository root. Commit both in one commit and wait for Render to show Live.
