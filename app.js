@@ -7,69 +7,24 @@
   let syncTimer=null, syncing=false, groupPollTimer=null, antiCheatStream=null, antiCheatActive=false;
 
   const DEFAULT_DB = {
-    version: 12,
+    version: 16,
     settings: { officialEmail: '', officialWhatsApp: '' },
-    accounts: [
-      { id: 'STU-001', password: 'demo123', name: 'Aarav Sharma', className: '6', section: 'A', school: 'Demo School', email: '', status: 'Active', createdAt: '2026-09-22', history: [{ school: 'Demo School', className: '6', section: 'A', year: '2026-27' }] },
-      { id: 'STU-002', password: 'demo123', name: 'Riya Verma', className: '6', section: 'B', school: 'Demo School', email: '', status: 'Active', createdAt: '2026-09-22', history: [{ school: 'Demo School', className: '6', section: 'B', year: '2026-27' }] }
-    ],
-    subjects: [
-      {
-        id: 'SCI', name: 'Science', language: 'English',
-        books: [{
-          id: 'SCI6', title: 'Science — Class 6', className: '6',
-          chapters: [{
-            id: 'CH1', title: 'Chapter 1 — Components of Food', order: 1, complete: true,
-            pages: [
-              {id:'PG1', number:1, imageName:'science-page-1.jpg', extractedText:'The food we eat contains some components that our body needs for growth, energy and good health. These components are called nutrients.', review:'Approved'},
-              {id:'PG2', number:2, imageName:'science-page-2.jpg', extractedText:'Carbohydrates are energy-giving nutrients. They are found in foods such as rice, wheat, potatoes and sugar.', review:'Approved'},
-              {id:'PG3', number:3, imageName:'science-page-3.jpg', extractedText:'Proteins are body-building nutrients. They help in growth and repair of body tissues.', review:'Approved'}
-            ],
-            paragraphs: [
-              {id:'P1', pageId:'PG1', title:'Nutrients in Food', text:'The food we eat contains some components that our body needs for growth, energy and good health. These components are called nutrients.', maxScore:10, weights:{}},
-              {id:'P2', pageId:'PG2', title:'Carbohydrates', text:'Carbohydrates are energy-giving nutrients. They are found in foods such as rice, wheat, potatoes and sugar.', maxScore:10, weights:{}},
-              {id:'P3', pageId:'PG3', title:'Proteins', text:'Proteins are body-building nutrients. They help in growth and repair of body tissues.', maxScore:10, weights:{}},
-            ],
-            qa: [
-              {id:'QA1', number:1, question:'What are nutrients?', answer:'The components in food that our body needs for growth, energy and good health are called nutrients.', maxScore:5, qualified:false, done:false},
-              {id:'QA2', number:2, question:'What are carbohydrates?', answer:'Carbohydrates are energy-giving nutrients found in foods such as rice, wheat, potatoes and sugar.', maxScore:5, qualified:false, done:false}
-            ],
-            formulas: [
-              {id:'F1', sampleName:'Simple Energy Formula (Demo)', formula:'E = P × t', spokenAliases:['E equals P multiply t','E is equal to P times t'], maxScore:10}
-            ]
-          },{
-            id:'CH2', title:'Chapter 2 — Getting to Know Plants', order:2, complete:false,
-            pages:[
-              {id:'PG4', number:4, imageName:'plants-page-4.jpg', extractedText:'Plants are living organisms. They need air, water, light and suitable temperature to grow.', review:'Approved'}
-            ],
-            paragraphs:[
-              {id:'P4', pageId:'PG4', title:'Plants Need Conditions', text:'Plants are living organisms. They need air, water, light and suitable temperature to grow.', maxScore:10, weights:{}}
-            ], qa:[], formulas:[]
-          }]
-        }]
-      },
-      { id:'ENG', name:'English', language:'English', books:[{ id:'ENG6', title:'English — Class 6', className:'6', chapters:[] }] },
-      { id:'HIN', name:'Hindi', language:'Hindi', books:[{ id:'HIN6', title:'Hindi — Class 6', className:'6', chapters:[] }] },
-      { id:'MAT', name:'Mathematics', language:'English', books:[{ id:'MAT6', title:'Mathematics — Class 6', className:'6', chapters:[] }] }
-    ],
+    accounts: [],
+    subjects: [],
     progress: {},
     feedback: [],
     history: [],
-    shares: {
-      snapshots: {},
-      incoming: [{id:'SHARE-IN-1', fromStudentId:'STU-002', fromName:'Riya Verma', toStudentId:'STU-001', targetType:'Chapter', targetId:'CH1', targetLabel:'Science • Chapter 1', status:'Pending'}],
-      outgoing: []
-    },
+    shares: { snapshots: {}, incoming: [], outgoing: [] },
     audit: [],
     usage: { activeMinutes: 0, sessions: [] }
   };
 
   let db = loadDb();
   db.shares ??= {snapshots:{},incoming:[],outgoing:[]}; db.shares.snapshots ??= {}; db.shares.incoming ??= []; db.shares.outgoing ??= [];
-  db.shares.incoming = db.shares.incoming.map(x=>({...x,toStudentId:x.toStudentId||'STU-001'}));
+  db.shares.incoming = db.shares.incoming.filter(x=>x && x.toStudentId);
   let state = {
     currentId: localStorage.getItem('easywayCurrentStudent') || null,
-    page: 'dashboard', subjectId: 'SCI', bookId: 'SCI6', chapterId: 'CH1', paragraphId: 'P1',
+    page: 'dashboard', subjectId: '', bookId: '', chapterId: '', paragraphId: '',
     pageNumber: 1, speakingListening: false, speakingLang: 'en-IN', recognition: null,
     readerMode: 'qualification', readerTranscript: '', readerAccuracy: 0,
     speakingTranscript: '', speakingScore: 0, speakingRecognized: '',
@@ -82,12 +37,21 @@
       const raw = localStorage.getItem(DB_KEY) || localStorage.getItem('easywayLearnStudentOnlyV14') || localStorage.getItem('easywayLearnStudentOnlyV13') || localStorage.getItem('easywayLearnStudentOnlyV12') || localStorage.getItem('easywayLearnStudentOnlyV11') || localStorage.getItem('easywayLearnStudentOnlyV10') || localStorage.getItem('easywayLearnStudentOnlyV9') || localStorage.getItem('easywayLearnStudentOnlyV8');
       const incoming = raw ? JSON.parse(raw) : {};
       const base = structuredClone(DEFAULT_DB);
-      const merged = {...base, ...incoming, version: 15};
+      const merged = {...base, ...incoming, version: 16};
+      // Remove only the known demo records/content from older builds. User-created
+      // subjects, books, pages, OCR text, scores and history are preserved.
+      merged.accounts = (Array.isArray(merged.accounts) ? merged.accounts : []).filter(a => !(
+        (a?.id === 'STU-001' && a?.name === 'Aarav Sharma' && a?.school === 'Demo School') ||
+        (a?.id === 'STU-002' && a?.name === 'Riya Verma' && a?.school === 'Demo School')
+      ));
+      merged.subjects = (Array.isArray(merged.subjects) ? merged.subjects : []).filter(s => !['SCI','ENG','HIN','MAT'].includes(s?.id));
+      merged.shares = {...base.shares, ...(merged.shares||{})};
+      merged.shares.incoming = (Array.isArray(merged.shares.incoming) ? merged.shares.incoming : []).filter(x => x?.id !== 'SHARE-IN-1');
+      merged.shares.outgoing = Array.isArray(merged.shares.outgoing) ? merged.shares.outgoing : [];
+      merged.shares.snapshots = (merged.shares.snapshots && typeof merged.shares.snapshots === 'object') ? merged.shares.snapshots : {};
       merged.settings = {...base.settings, ...(incoming.settings||{})};
-      merged.accounts = Array.isArray(incoming.accounts) ? incoming.accounts : base.accounts;
       merged.accounts.forEach(a=>{a.id=String(a.id||'').toUpperCase();a.history=Array.isArray(a.history)?a.history:[];a.status=a.status||'Active'});
       // Legacy/plaintext passwords are migrated on first successful login; no new account stores plaintext.
-      merged.subjects = Array.isArray(incoming.subjects) ? incoming.subjects : base.subjects;
       merged.subjects = merged.subjects.map(s=>({
         ...s,
         name:String(s?.name||s?.title||'Untitled Subject'),
@@ -95,20 +59,31 @@
         books:Array.isArray(s?.books)?s.books.map(b=>({ ...b, title:String(b?.title||b?.name||'Untitled Book'), chapters:Array.isArray(b?.chapters)?b.chapters:[] })):[]
       }));
       merged.progress = incoming.progress && typeof incoming.progress === 'object' ? incoming.progress : {};
-      merged.history = Array.isArray(incoming.history) ? incoming.history : [];
-      merged.audit = Array.isArray(incoming.audit) ? incoming.audit : [];
+      for (const k of Object.keys(merged.progress)) if (k.startsWith('STU-001:') || k.startsWith('STU-002:')) delete merged.progress[k];
+      merged.history = (Array.isArray(incoming.history) ? incoming.history : []).filter(x => x?.studentId !== 'STU-001' && x?.studentId !== 'STU-002');
+      merged.audit = (Array.isArray(incoming.audit) ? incoming.audit : []).filter(x => x?.actor !== 'STU-001' && x?.actor !== 'STU-002');
       merged.usage = {...base.usage, ...(incoming.usage||{})};
       merged.usage.sessions = Array.isArray(incoming.usage?.sessions) ? incoming.usage.sessions : [];
-      merged.shares = {...base.shares, ...(incoming.shares||{})};
-      merged.shares.snapshots = (incoming.shares?.snapshots && typeof incoming.shares.snapshots==='object') ? incoming.shares.snapshots : {};
-      merged.shares.incoming = Array.isArray(incoming.shares?.incoming) ? incoming.shares.incoming : [];
-      merged.shares.outgoing = Array.isArray(incoming.shares?.outgoing) ? incoming.shares.outgoing : [];
+      merged.shares.snapshots = (merged.shares.snapshots && typeof merged.shares.snapshots==='object') ? merged.shares.snapshots : {};
+      merged.shares.incoming = Array.isArray(merged.shares.incoming) ? merged.shares.incoming : [];
+      merged.shares.outgoing = Array.isArray(merged.shares.outgoing) ? merged.shares.outgoing : [];
       return merged;
     } catch { return structuredClone(DEFAULT_DB); }
   }
-  function saveDb(){ localStorage.setItem(DB_KEY, JSON.stringify(db)); scheduleServerSync(); }
+  let syncDirty=false;
+  function saveDb(){
+    localStorage.setItem(DB_KEY, JSON.stringify(db));
+    syncDirty=true;
+    scheduleServerSync();
+  }
   function serverToken(){return localStorage.getItem('easywayServerToken')||'';}
-  function scheduleServerSync(){if(!API_BASE||!state.currentId||!serverToken())return;clearTimeout(syncTimer);syncTimer=setTimeout(()=>syncToServer().catch(()=>{}),600)}
+  function scheduleServerSync(){
+    if(!API_BASE||!state.currentId||!serverToken())return;
+    clearTimeout(syncTimer);
+    syncTimer=setTimeout(()=>{
+      syncToServer().catch(()=>{});
+    },700);
+  }
   async function apiFetch(path,opts={}){if(!API_BASE)throw Error('API unavailable');const h={'content-type':'application/json',...(opts.headers||{})};const t=serverToken();if(t)h.authorization='Bearer '+t;const r=await fetch(API_BASE+path,{...opts,headers:h});const d=await r.json().catch(()=>({}));if(!r.ok)throw Error(d.error||('HTTP '+r.status));return d}
   async function ocrFetch(path,payload){if(!API_BASE)throw Error('OCR server is unavailable');const r=await fetch(API_BASE+path,{method:'POST',headers:{'content-type':'application/json','cache-control':'no-store','x-easyway-ocr':'1'},cache:'no-store',body:JSON.stringify(payload)});const d=await r.json().catch(()=>({error:'Invalid OCR server response'}));if(!r.ok)throw Error(d.error||(`OCR HTTP ${r.status}`));return d}
   function remoteState(){return {version:43,settings:db.settings,subjects:db.subjects,progress:db.progress,history:db.history,shares:db.shares,audit:db.audit,usage:db.usage};}
@@ -120,8 +95,41 @@
     const r=await apiFetch('/transcribe',{method:'POST',body:JSON.stringify({mime:blob.type||'audio/webm',data,language})});
     return r;
   }
-  async function syncToServer(){if(syncing||!API_BASE||!state.currentId||!serverToken())return;syncing=true;try{const me=current();await apiFetch('/me',{method:'PUT',body:JSON.stringify({name:me?.name||'',profile:me?{email:me.email||'',className:me.className||'',section:me.section||'',school:me.school||'',history:me.history||[]}: {}})});await apiFetch('/state',{method:'PUT',body:JSON.stringify({state:remoteState()})})}finally{syncing=false}}
-  async function hydrateFromServer(){const r=await apiFetch('/me');const sr=await apiFetch('/state');const st=sr.state||{};if(Array.isArray(st.subjects)&&st.subjects.length)db.subjects=st.subjects.map(s=>({...s,name:String(s?.name||s?.title||'Untitled Subject'),books:Array.isArray(s?.books)?s.books:[]}));if(st.progress&&typeof st.progress==='object'&&Object.keys(st.progress).length)db.progress=st.progress;if(Array.isArray(st.history)&&st.history.length)db.history=st.history;if(st.shares&&typeof st.shares==='object')db.shares={...db.shares,...st.shares};if(Array.isArray(st.audit)&&st.audit.length)db.audit=st.audit;if(st.usage&&typeof st.usage==='object')db.usage={...db.usage,...st.usage};if(Array.isArray(st.feedback))db.feedback=st.feedback;if(st.settings&&typeof st.settings==='object')db.settings={...db.settings,...st.settings};try{const sh=await apiFetch('/shares');if(sh&&typeof sh==='object')db.shares={...db.shares,...sh,snapshots:{...(db.shares.snapshots||{}),...(sh.snapshots||{})}}}catch{}const me=current();if(me&&r.name)me.name=r.name;if(me&&r.profile)Object.assign(me,r.profile);localStorage.setItem(DB_KEY,JSON.stringify(db));}
+  async function syncToServer(){
+    if(syncing||!API_BASE||!state.currentId||!serverToken())return;
+    syncing=true;
+    syncDirty=false;
+    try{
+      const me=current();
+      await apiFetch('/me',{method:'PUT',body:JSON.stringify({name:me?.name||'',profile:me?{email:me.email||'',className:me.className||'',section:me.section||'',school:me.school||'',history:me.history||[]}: {}})});
+      await apiFetch('/state',{method:'PUT',body:JSON.stringify({state:remoteState()})});
+    } finally {
+      syncing=false;
+      if(syncDirty) scheduleServerSync();
+    }
+  }
+  async function hydrateFromServer(){
+    const r=await apiFetch('/me');
+    const sr=await apiFetch('/state');
+    const st=sr.state||{};
+    const hasServerLearning=Array.isArray(st.subjects)||Object.keys(st.progress||{}).length||Array.isArray(st.history)||Array.isArray(st.audit)||Array.isArray(st.feedback)||Object.keys(st.shares||{}).length||Object.keys(st.usage||{}).length;
+    if(hasServerLearning){
+      db.subjects=Array.isArray(st.subjects)?st.subjects.map(s=>({...s,name:String(s?.name||s?.title||'Untitled Subject'),books:Array.isArray(s?.books)?s.books:[]})):[];
+      db.progress=st.progress&&typeof st.progress==='object'?st.progress:{};
+      db.history=Array.isArray(st.history)?st.history:[];
+      db.shares={...DEFAULT_DB.shares,...(st.shares||{}),snapshots:{...((st.shares||{}).snapshots||{})},incoming:Array.isArray(st.shares?.incoming)?st.shares.incoming:[],outgoing:Array.isArray(st.shares?.outgoing)?st.shares.outgoing:[]};
+      db.audit=Array.isArray(st.audit)?st.audit:[];
+      db.usage={...DEFAULT_DB.usage,...(st.usage||{}),sessions:Array.isArray(st.usage?.sessions)?st.usage.sessions:[]};
+      db.feedback=Array.isArray(st.feedback)?st.feedback:[];
+      db.settings=st.settings&&typeof st.settings==='object'?{...DEFAULT_DB.settings,...st.settings}:{...DEFAULT_DB.settings};
+    }
+    try{const sh=await apiFetch('/shares');if(sh&&typeof sh==='object')db.shares={...db.shares,...sh,snapshots:{...(db.shares.snapshots||{}),...(sh.snapshots||{})}}}catch{}
+    const me=current();
+    if(me&&r.name)me.name=r.name;
+    if(me&&r.profile)Object.assign(me,r.profile);
+    localStorage.setItem(DB_KEY,JSON.stringify(db));
+    syncDirty=false;
+  }
   async function hashPassword(value){
     const data=new TextEncoder().encode(String(value));
     const digest=await crypto.subtle.digest('SHA-256',data);
@@ -176,7 +184,7 @@
   }
 
   function login(){
-    app.innerHTML=`<div class="login"><div class="login-box"><section class="hero"><div class="eyebrow">LEARN • SPEAK • SCORE • IMPROVE</div><h1>Easyway Learn</h1><p>Student-only textbook learning with a permanent Student User ID, page/paragraph learning, speaking assessment, Q&A, formula tests, chapter tests, history, progress and content sharing.</p><div class="feature"><b>80% qualification unlock</b><div class="small">Read a paragraph for qualification. Speaking unlocks at 80% or higher.</div></div><div class="feature"><b>Full Chapter Test</b><div class="small">It unlocks automatically after every required paragraph reaches 80% reading qualification.</div></div><div class="feature"><b>Permanent student identity</b><div class="small">The same Student ID carries class/year and learning history forward.</div></div></section><section class="login-card"><div class="eyebrow">STUDENT LOGIN</div><h2 style="margin:6px 0 20px">Sign in</h2><div class="field"><label>STUDENT USER ID</label><input id="loginId" value="${esc(localStorage.getItem('easywayLastId')||'STU-001')}" autocomplete="username" /></div><div class="field"><label>PASSWORD</label><input id="loginPwd" type="password" value="demo123" autocomplete="current-password" /></div><button class="btn primary" style="width:100%" onclick="loginSubmit()">Sign In</button><div class="toolbar" style="margin-top:10px"><button class="btn secondary" onclick="openRegister()">Create Permanent ID</button><button class="btn ghost" onclick="openForgot()">Forgot Password</button></div><div class="demo"><b>Demo account:</b> Student ID <b>STU-001</b> • password <b>demo123</b></div><div class="small muted" style="margin-top:14px">No teacher/admin login is shown in this final Student-only app UI.</div></section></div></div>`;
+    app.innerHTML=`<div class="login"><div class="login-box"><section class="hero"><div class="eyebrow">LEARN • SPEAK • SCORE • IMPROVE</div><h1>Easyway Learn</h1><p>Student-only textbook learning with a permanent Student User ID, page/paragraph learning, speaking assessment, Q&A, formula tests, chapter tests, history, progress and content sharing.</p><div class="feature"><b>80% qualification unlock</b><div class="small">Read a paragraph for qualification. Speaking unlocks at 80% or higher.</div></div><div class="feature"><b>Full Chapter Test</b><div class="small">It unlocks automatically after every required paragraph reaches 80% reading qualification.</div></div><div class="feature"><b>Permanent student identity</b><div class="small">The same Student ID carries class/year and learning history forward.</div></div></section><section class="login-card"><div class="eyebrow">STUDENT LOGIN</div><h2 style="margin:6px 0 20px">Sign in</h2><div class="field"><label>STUDENT USER ID</label><input id="loginId" value="${esc(localStorage.getItem('easywayLastId')||'')}" autocomplete="username" /></div><div class="field"><label>PASSWORD</label><input id="loginPwd" type="password" value="" autocomplete="current-password" /></div><button class="btn primary" style="width:100%" onclick="loginSubmit()">Sign In</button><div class="toolbar" style="margin-top:10px"><button class="btn secondary" onclick="openRegister()">Create Permanent ID</button><button class="btn ghost" onclick="openForgot()">Forgot Password</button></div><div class="small muted" style="margin-top:14px">No teacher/admin login is shown in this final Student-only app UI.</div></section></div></div>`;
   }
   async function loginSubmit(){
     const id=(document.getElementById('loginId')?.value||'').trim().toUpperCase(); const pwd=document.getElementById('loginPwd')?.value||'';
@@ -204,7 +212,12 @@
   async function resetPassword(){const id=(document.getElementById('forgotId')?.value||'').trim().toUpperCase();const pwd=document.getElementById('forgotPwd')?.value||'';const recovery=(document.getElementById('forgotRecovery')?.value||'').trim();if(pwd.length<6){toast('Password must be at least 6 characters');return}if(API_BASE){try{const r=await apiFetch('/password/reset',{method:'POST',body:JSON.stringify({studentId:id,recoveryCode:recovery,newPassword:pwd})});alert('Save your new recovery code somewhere safe.\n\n'+r.recoveryCode);state.modal=null;toast('Password updated for the same Student ID');login();return}catch(e){toast(e.message||'Password reset failed');return}}const acc=db.accounts.find(a=>a.id===id);if(!acc){toast('Student ID not found');return}acc.passwordHash=await hashPassword(pwd);delete acc.password;saveDb();state.modal=null;toast('Password updated for the same Student ID');login()}
 
   function dashboard(){
-    const me=current(); const subj=findSubject(), book=findBook(); const ch=findChapter(); const doneCount=ch.paragraphs.filter(p=>getProg(p.id).speakingAttempts.length>0).length; const fullUnlocked=chapterTestUnlocked(ch);
+    const me=current(); const subj=findSubject(), book=subj?.books?.[0] || null, ch=book?.chapters?.[0] || null;
+    if(!subj || !book || !ch){
+      return layout(`<div class="hero"><div class="eyebrow">STUDENT DASHBOARD</div><h1 style="margin:8px 0 4px;font-size:32px">Hello, ${esc(me.name)}</h1><p style="margin:0;color:#cbd5e1">Your learning space is ready. No demo material is installed.</p><div class="toolbar" style="margin-top:18px"><button class="btn" style="background:#fff;color:#312e81" onclick="go('library')">Create Subject</button><button class="btn" style="background:rgba(255,255,255,.08);color:#fff;border-color:rgba(255,255,255,.18)" onclick="go('upload')">Upload Page</button></div></div><div class="card" style="margin-top:16px"><h2 class="section-title">Start your own textbook</h2><p class="muted">Create your Subject and Book, then upload a page photo or PDF. OCR text, corrected text, paragraphs, scores and history are saved to your Student ID.</p></div>`, activeNav());
+    }
+    state.subjectId=subj.id; state.bookId=book.id; state.chapterId=ch.id;
+    const doneCount=ch.paragraphs.filter(p=>getProg(p.id).speakingAttempts.length>0).length; const fullUnlocked=chapterTestUnlocked(ch);
     return layout(`<div class="hero"><div class="eyebrow">STUDENT DASHBOARD</div><div class="row between wrap"><div><h1 style="margin:8px 0 4px;font-size:32px">Hello, ${esc(me.name)}</h1><p style="margin:0;color:#cbd5e1">${esc(me.school||'Independent Student')} • Class ${esc(me.className||'—')} • Section ${esc(me.section||'—')}</p></div><span class="pill green">Permanent ID • ${esc(me.id)}</span></div><div style="margin-top:18px" class="toolbar"><button class="btn" style="background:#fff;color:#312e81" onclick="go('library')">Continue Learning</button><button class="btn" style="background:rgba(255,255,255,.08);color:#fff;border-color:rgba(255,255,255,.18)" onclick="go('upload')">Upload Page</button></div></div>
       <div class="grid g4" style="margin-top:16px"><div class="card stat"><div class="small muted">Chapter Completion</div><div class="num">${doneCount}/${ch.paragraphs.length}</div><div class="progress"><span style="width:${ch.paragraphs.length?doneCount/ch.paragraphs.length*100:0}%"></span></div></div><div class="card stat"><div class="small muted">Latest Score</div><div class="num">${latestPercent()}%</div><div class="small muted">From your last assessment</div></div><div class="card stat"><div class="small muted">High Score</div><div class="num">${highPercent()}%</div><div class="small muted">Best stored score</div></div><div class="card stat"><div class="small muted">Study Time</div><div class="num">${db.usage.activeMinutes}m</div><div class="small muted">Your private active time</div></div></div>
       <div class="grid g2" style="margin-top:16px"><div class="card"><div class="row between wrap"><div><div class="eyebrow">CURRENT CONTENT</div><h2 class="section-title">${esc(subj.name)} → ${esc(book.title)}</h2><div class="muted">${esc(ch.title)}</div></div><span class="pill purple">${ch.paragraphs.length} paragraphs</span></div><div class="list" style="margin-top:12px">${ch.paragraphs.map(p=>{const pg=getProg(p.id);const unlocked=pg.qualified||pg.speakingAttempts.length>0;return `<div class="list-item"><div><b>${esc(p.title)}</b><div class="small muted">${pg.speakingAttempts.length?`High ${Math.round(pg.highScore)}% • ${pg.speakingAttempts.length} attempts`:'Not tested yet'}</div></div><button class="btn ${unlocked?'secondary':'primary'}" onclick="openLesson('${p.id}')">${unlocked?'Practice':'Learn'}</button></div>`}).join('')}</div></div><div class="card"><div class="row between"><div><div class="eyebrow">CHAPTER TEST</div><h2 class="section-title">Full Chapter Test</h2></div><span class="pill ${fullUnlocked?'green':'amber'}">${fullUnlocked?'Unlocked':'Locked'}</span></div><p class="muted">Complete the reading qualification (80%+) for every required paragraph first. The combined chapter test opens automatically after every paragraph reaches 80% reading qualification and keeps its own history.</p><button class="btn ${fullUnlocked?'primary':'ghost'}" ${fullUnlocked?'':'disabled'} onclick="startChapterTest()">${fullUnlocked?'Start Full Chapter Test':'Complete all paragraphs first'}</button></div></div>
@@ -238,7 +251,7 @@
   function pageView(){
     const ch=findChapter();const pg=ch?.pages.find(p=>p.number===state.pageNumber);if(!pg)return chapterView();
     const idx=ch.pages.findIndex(p=>p.id===pg.id);const para=ch.paragraphs.find(p=>p.pageId===pg.id);
-    return layout(`<div class="breadcrumb">${esc(findBook().title)} → ${esc(ch.title)} → Page ${pg.number}</div><div class="row between wrap"><div><div class="eyebrow">ORIGINAL PAGE VIEW</div><h1 class="title">Page ${pg.number}</h1><div class="subtitle">${esc(pg.imageName)} • Review: ${esc(pg.review)}</div></div><div class="toolbar"><button class="btn ghost" onclick="viewPage(${Math.max(1,ch.pages[Math.max(0,idx-1)]?.number||1)})">← Prev</button><button class="btn ghost" onclick="viewPage(${ch.pages[Math.min(ch.pages.length-1,idx+1)]?.number||pg.number})">Next →</button></div></div><div class="grid g2" style="margin-top:16px"><div class="card"><div class="hero" style="padding:18px"><div class="eyebrow">TEXTBOOK PAGE</div><div id="pageAsset" style="margin-top:12px;min-height:120px;display:flex;align-items:center;justify-content:center"><div class="small muted">Loading stored page asset…</div></div><div class="small muted" style="margin-top:10px">${esc(pg.imageName)} • ${pg.assetKey?'Stored locally in this browser':'Demo metadata only'}</div></div><div class="field" style="margin-top:14px"><label>EXTRACTED TEXT</label><textarea id="pageText">${esc(pg.extractedText)}</textarea></div><div class="toolbar"><button class="btn primary" onclick="savePageText('${pg.id}')">Save Extracted Text</button><button class="btn ghost" onclick="shareContent('Page','${pg.id}','Page ${pg.number} • ${esc(ch.title)}')">Share Page</button><button class="btn ghost" onclick="deletePage('${pg.id}')">Delete Page</button></div></div><div class="card"><div class="row between"><h2 class="section-title">Detected Paragraph</h2><span class="pill green">AI/OCR detected</span></div>${para?`<div class="paragraph">${esc(para.text)}</div><div class="toolbar" style="margin-top:12px"><button class="btn secondary" onclick="openLesson('${para.id}')">Open Paragraph Learning</button><button class="btn ghost" onclick="editParagraph('${para.id}')">Edit</button><button class="btn ghost" onclick="shareContent('Paragraph','${para.id}','${esc(para.title)}')">Share</button><button class="btn ghost" onclick="deleteParagraph('${para.id}')">Delete</button></div>`:'<div class="empty">No paragraph linked to this page yet.</div>'}</div></div>`, [['dashboard','Home'],['library','My Learning'],['history','History'],['progress','Progress'],['rankings','Ranking'],['shares','Shared'],['profile','Profile'],['support','Help & Support']]);
+    return layout(`<div class="breadcrumb">${esc(findBook().title)} → ${esc(ch.title)} → Page ${pg.number}</div><div class="row between wrap"><div><div class="eyebrow">ORIGINAL PAGE VIEW</div><h1 class="title">Page ${pg.number}</h1><div class="subtitle">${esc(pg.imageName)} • Review: ${esc(pg.review)}</div></div><div class="toolbar"><button class="btn ghost" onclick="viewPage(${Math.max(1,ch.pages[Math.max(0,idx-1)]?.number||1)})">← Prev</button><button class="btn ghost" onclick="viewPage(${ch.pages[Math.min(ch.pages.length-1,idx+1)]?.number||pg.number})">Next →</button></div></div><div class="grid g2" style="margin-top:16px"><div class="card"><div class="hero" style="padding:18px"><div class="eyebrow">TEXTBOOK PAGE</div><div id="pageAsset" style="margin-top:12px;min-height:120px;display:flex;align-items:center;justify-content:center"><div class="small muted">Loading stored page asset…</div></div><div class="small muted" style="margin-top:10px">${esc(pg.imageName)} • ${pg.assetKey?'Stored locally in this browser':'Stored page metadata'}</div></div><div class="field" style="margin-top:14px"><label>EXTRACTED TEXT</label><textarea id="pageText">${esc(pg.extractedText)}</textarea></div><div class="toolbar"><button class="btn primary" onclick="savePageText('${pg.id}')">Save Extracted Text</button><button class="btn ghost" onclick="shareContent('Page','${pg.id}','Page ${pg.number} • ${esc(ch.title)}')">Share Page</button><button class="btn ghost" onclick="deletePage('${pg.id}')">Delete Page</button></div></div><div class="card"><div class="row between"><h2 class="section-title">Detected Paragraph</h2><span class="pill green">AI/OCR detected</span></div>${para?`<div class="paragraph">${esc(para.text)}</div><div class="toolbar" style="margin-top:12px"><button class="btn secondary" onclick="openLesson('${para.id}')">Open Paragraph Learning</button><button class="btn ghost" onclick="editParagraph('${para.id}')">Edit</button><button class="btn ghost" onclick="shareContent('Paragraph','${para.id}','${esc(para.title)}')">Share</button><button class="btn ghost" onclick="deleteParagraph('${para.id}')">Delete</button></div>`:'<div class="empty">No paragraph linked to this page yet.</div>'}</div></div>`, [['dashboard','Home'],['library','My Learning'],['history','History'],['progress','Progress'],['rankings','Ranking'],['shares','Shared'],['profile','Profile'],['support','Help & Support']]);
   }
   function savePageText(pageId){const pg=findChapter().pages.find(p=>p.id===pageId);const v=document.getElementById('pageText')?.value.trim();if(!pg||!v)return;pg.extractedText=v;const para=findChapter().paragraphs.find(p=>p.pageId===pageId);if(para)para.text=v;saveDb();addAudit('Edit Page Text',pageId);toast('Page text saved');render()}
   async function deletePage(pageId){if(!confirm('Delete this page from your own content? Shared recipients keep their accepted access unless you choose otherwise in the sharing manager.'))return;const ch=findChapter();const old=ch.pages.find(p=>p.id===pageId);ch.pages=ch.pages.filter(p=>p.id!==pageId);ch.paragraphs=ch.paragraphs.filter(p=>p.pageId!==pageId);if(old?.assetKey){await assetDelete(old.assetKey);if(API_BASE&&serverToken()){try{await apiFetch('/assets/'+encodeURIComponent(old.assetKey),{method:'DELETE'})}catch{}}}saveDb();addAudit('Delete Page',pageId);state.page='bookDetail';render();}
@@ -320,7 +333,7 @@
   function normalizeFormulaSpeech(s){return String(s||'').toLowerCase().replace(/multiply|into|times/g,'*').replace(/equals|equal to|is equal to/g,'=').replace(/plus/g,'+').replace(/minus/g,'-').replace(/divide|divided by|slash/g,'/').replace(/square root/g,'sqrt').replace(/[^a-z0-9*=+\-/.\s]/g,' ').replace(/\s+/g,' ').trim()}
   async function submitFormula(id){const f=findChapter().formulas.find(x=>x.id===id);const text=(document.getElementById('formulaSpeech')?.value||'').trim();if(!text){toast('Speak or type the formula');return}state.formulaTranscript=text;let serverScore=null;try{const a=await serverAssessment('Formula',id,text);serverScore=a.score}catch{}const got=normalizeFormulaSpeech(text),exp=normalizeFormulaSpeech(f.formula);const ok=got.replace(/\s/g,'')===exp.replace(/\s/g,'') || f.spokenAliases.some(a=>normalizeFormulaSpeech(a).replace(/\s/g,'')===got.replace(/\s/g,''));const pct=serverScore===null?(ok?100:(wordAccuracy(f.spokenAliases.join(' '),text)>=60?60:0)):serverScore;db.history.unshift({id:'F-'+Date.now(),studentId:state.currentId,content:f.sampleName,type:'Formula',score:Math.round(f.maxScore*pct/100),max:f.maxScore,date:new Date().toISOString(),attempt:db.history.filter(h=>h.studentId===state.currentId&&h.type==='Formula'&&h.content===f.sampleName).length+1});saveDb();addAudit('Formula Test',f.id,`${pct}%`);toast(`Formula result: ${pct}%`);go('history')}
 
-  function uploadView(){return layout(`<div class="eyebrow">CONTENT UPLOAD</div><h1 class="title">Build your own Subject / Book / Chapter</h1><div class="subtitle">Student has full authority over their own Subject, Book, Chapter, Page and Paragraph content in this final model.</div><div class="card" style="margin-top:16px"><div class="grid g2"><div class="field"><label>SUBJECT</label><select id="upSubject">${db.subjects.map(s=>`<option value="${s.id}">${esc(s.name)}</option>`).join('')}<option value="NEW">+ New Subject</option></select></div><div class="field"><label>BOOK</label><select id="upBook"></select></div><div class="field"><label>CHAPTER</label><select id="upChapter"></select></div><div class="field"><label>NEW CHAPTER NAME (optional)</label><input id="newChapter" placeholder="Detected automatically from heading when possible" /></div></div><div class="field"><label>PAGE PHOTOS / PDFS</label><input id="pageFiles" type="file" accept="image/*,.pdf" multiple /></div><div class="field"><label>EXTRACTED TEXT (DEMO FALLBACK / OCR REVIEW)</label><textarea id="upText" placeholder="For the demo, paste the page text here. Multi-page uploads can be reviewed and corrected before saving."></textarea></div><div class="demo"><b>Automatic chapter detection:</b> file names containing “chapter 2”, “ch2”, etc. are grouped into that chapter. Otherwise the selected chapter is used. Low-confidence cases stay editable for confirmation.</div><div class="toolbar" style="margin-top:12px"><button class="btn primary" onclick="processUpload()">Detect & Save Pages</button><button class="btn ghost" onclick="go('library')">Cancel</button></div></div>`, activeNav())}
+  function uploadView(){return layout(`<div class="eyebrow">CONTENT UPLOAD</div><h1 class="title">Build your own Subject / Book / Chapter</h1><div class="subtitle">Student has full authority over their own Subject, Book, Chapter, Page and Paragraph content in this final model.</div><div class="card" style="margin-top:16px"><div class="grid g2"><div class="field"><label>SUBJECT</label><select id="upSubject">${db.subjects.map(s=>`<option value="${s.id}">${esc(s.name)}</option>`).join('')}<option value="NEW">+ New Subject</option></select></div><div class="field"><label>BOOK</label><select id="upBook"></select></div><div class="field"><label>CHAPTER</label><select id="upChapter"></select></div><div class="field"><label>NEW CHAPTER NAME (optional)</label><input id="newChapter" placeholder="Detected automatically from heading when possible" /></div></div><div class="field"><label>PAGE PHOTOS / PDFS</label><input id="pageFiles" type="file" accept="image/*,.pdf" multiple /></div><div class="field"><label>EXTRACTED TEXT (OCR REVIEW)</label><textarea id="upText" placeholder="You can review and correct OCR text before saving. Multi-page uploads are supported."></textarea></div><div class="demo"><b>Automatic chapter detection:</b> file names containing “chapter 2”, “ch2”, etc. are grouped into that chapter. Otherwise the selected chapter is used. Low-confidence cases stay editable for confirmation.</div><div class="toolbar" style="margin-top:12px"><button class="btn primary" onclick="processUpload()">Detect & Save Pages</button><button class="btn ghost" onclick="go('library')">Cancel</button></div></div>`, activeNav())}
   function refreshUploadOptions(){const sid=document.getElementById('upSubject')?.value;const s=findSubjectBy(sid);if(!s)return;const bs=document.getElementById('upBook');bs.innerHTML=s.books.map(b=>`<option value="${b.id}">${esc(b.title)}</option>`).join('');const b=s.books[0];document.getElementById('upChapter').innerHTML=b?.chapters.map(c=>`<option value="${c.id}">${esc(c.title)}</option>`).join('')||'<option value="">No chapter yet</option>';}
   function detectChapterFromFilename(name, fallback){
     const m=String(name||'').match(/chapter\s*[-_]?\s*(\d+)|\bch\s*[-_]?\s*(\d+)\b/i);
@@ -463,7 +476,7 @@
         const blob=await assetGet(pg.assetKey);
         if(blob) assets.push({key:pg.assetKey,type:blob.type||'application/octet-stream',data:await blobToDataUrl(blob)});
       }
-      const payload={format:'Easyway Learn Student Full Backup',version:15,exportedAt:new Date().toISOString(),database:db,assets};
+      const payload={format:'Easyway Learn Student Full Backup',version:16,exportedAt:new Date().toISOString(),database:db,assets};
       const blob=new Blob([JSON.stringify(payload)],{type:'application/json'});
       const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=`easyway-learn-full-backup-${today()}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
       addAudit('Export Full Backup',state.currentId,`${assets.length} asset(s)`);
@@ -477,7 +490,7 @@
       const raw=await file.text();const payload=JSON.parse(raw);const incoming=payload?.database||payload;
       if(!incoming||!Array.isArray(incoming.accounts)||!Array.isArray(incoming.subjects)||!incoming.progress){throw new Error('Invalid backup')}
       if(!confirm('Restore this Easyway Learn data backup? Current local database will be replaced.')){input.value='';return}
-      db=Object.assign(structuredClone(DEFAULT_DB),incoming,{version:15});saveDb();
+      db=Object.assign(structuredClone(DEFAULT_DB),incoming,{version:16});saveDb();
       for(const a of (payload?.assets||[])){
         try{const res=await fetch(a.data);const blob=await res.blob();await assetPut(a.key,blob)}catch{}
       }

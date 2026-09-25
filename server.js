@@ -26,7 +26,7 @@ const RATE_LIMIT = 120;
 const MAX_REQUEST_BYTES = 100_000_000;
 const MAX_AUDIO_BYTES = 15_000_000;
 const MAX_ANTICHEAT_BYTES = 1_500_000;
-const APP_VERSION = '0.68.0';
+const APP_VERSION = '0.69.0';
 const TRANSCRIBE_MODEL = process.env.OPENAI_TRANSCRIBE_MODEL || 'gpt-4o-mini-transcribe';
 const rateBuckets = new Map();
 
@@ -59,11 +59,17 @@ function readStore() {
   const store = USE_SQLITE ? JSON.parse(db.prepare('SELECT value FROM app_state WHERE key=?').get('students').value) : JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
   if (!store.students) store.students={};
   if (!store.groupSessions) store.groupSessions={};
-  if (!store.students['STU-001']) {
-    const p=hashPassword('demo123');
-    store.students['STU-001']={studentId:'STU-001',name:'Aarav Sharma',password:p,recoveryHash:null,profile:{className:'6',section:'A',school:'Demo School',email:'',history:[{school:'Demo School',className:'6',section:'A',year:'2026-27'}]},state:{},audit:[]};
-    writeStore(store);
+  // No demo/student/sample records are seeded. Existing exact demo records from older
+  // builds are removed once, without touching real Student IDs or learning data.
+  let changed = false;
+  for (const [id, s] of Object.entries(store.students)) {
+    const p = s?.profile || {};
+    const isLegacyDemo =
+      (id === 'STU-001' && s?.name === 'Aarav Sharma' && p.school === 'Demo School' && !s?.recoveryHash) ||
+      (id === 'STU-002' && s?.name === 'Riya Verma' && p.school === 'Demo School' && !s?.recoveryHash);
+    if (isLegacyDemo) { delete store.students[id]; changed = true; }
   }
+  if (changed) writeStore(store);
   return store;
 }
 function writeStore(store) {
@@ -515,10 +521,16 @@ async function handle(req,res) {
       for(const s of subjects){books+=(s.books||[]).length; for(const b of (s.books||[])){chapters+=(b.chapters||[]).length; for(const c of (b.chapters||[])){pages+=(c.pages||[]).length; paragraphs+=(c.paragraphs||[]).length;}}}
       return json(res,200,{studentId:student.studentId,counts:{subjects:subjects.length,books,chapters,pages,paragraphs,assessments:assessments.length},latestAssessment:assessments[0]||null,serverTime:new Date().toISOString()});
     }
-    if (req.method==='GET' && url.pathname==='/api/state') return json(res,200,{version:50,state:student.state});
+    if (req.method==='GET' && url.pathname==='/api/state') {
+      const state = (student.state && typeof student.state === 'object') ? student.state : {};
+      return json(res,200,{version:51,state});
+    }
     if (req.method==='PUT' && url.pathname==='/api/state') {
       const b=await body(req); if (!b.state || typeof b.state!=='object') return json(res,400,{error:'state object required'});
-      student.state=b.state; audit(student,'Sync Learning State'); writeStore(store); return json(res,200,{ok:true,version:1});
+      // Replace the student's learning snapshot atomically. The client sends the complete
+      // current snapshot, so an edit never removes unrelated fields from an older snapshot.
+      student.state={...b.state, savedAt:new Date().toISOString(), schemaVersion:51};
+      audit(student,'Sync Learning State'); writeStore(store); return json(res,200,{ok:true,version:51,savedAt:student.state.savedAt});
     }
     if (req.method==='POST' && url.pathname==='/api/transcribe') {
       const b=await body(req); const mime=String(b.mime||'audio/webm'); const data=String(b.data||''); const language=String(b.language||'');
