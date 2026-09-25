@@ -1,11 +1,7 @@
-Easyway Learn V61 — OCR pipeline fix
+Easyway Learn V62
 
-1. Replaced OCR upload MIME detection so Android/browser files with missing MIME are recognized from filename.
-2. OCR now explicitly uses installed eng+hin languages and verifies Tesseract is available.
-3. OCR tries Tesseract PSM 6, 3 and 11 and keeps the strongest text result.
-4. PDFs are converted page-by-page with Poppler.
-5. Server returns the actual OCR failure reason instead of silently hiding it.
-6. Upload review now shows OCR failure text and reports partial failures.
-7. Increased JSON/OCR asset limits to 25 MB / 15 MB.
+Fix: Create Subject / Create Book typing reliability.
 
-Replace app.js, server.js, Dockerfile, styles.css and sw.js at repo root, then commit together.
+The create Subject and create Book actions now use the browser's native prompt input instead of the custom modal input. This bypasses mobile speech-recognition/render/focus conflicts that could prevent keyboard text entry. Subject and Book records are saved normally to the existing database structure, with audit entries and normal toast/render flow.
+
+OCR changes from V61 are retained.
