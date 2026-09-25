@@ -203,7 +203,7 @@
     if(!name||password.length<6){toast('Enter name and a 6+ character password');return}
     const className=(document.getElementById('regClass')?.value||'').trim(),section=(document.getElementById('regSection')?.value||'').trim(),school=(document.getElementById('regSchool')?.value||'').trim(),email=(document.getElementById('regEmail')?.value||'').trim();
     const history=[{school,className,section,year:String(new Date().getFullYear())+'-'+String(new Date().getFullYear()+1).slice(-2)}];
-    if(API_BASE){try{const created=await apiFetch('/register',{method:'POST',body:JSON.stringify({studentId:id,password,name,profile:{email,className,section,school,history}})});alert('Save this recovery code somewhere safe. It is required if you forget your password:\n\n'+created.recoveryCode);const l=await apiFetch('/login',{method:'POST',body:JSON.stringify({studentId:id,password})});localStorage.setItem('easywayServerToken',l.token);db.accounts.push({id,name,className,section,school,email,status:'Active',createdAt:today(),history});state.currentId=id;localStorage.setItem('easywayCurrentStudent',id);localStorage.setItem('easywayLastId',id);state.modal=null;await syncToServer();addAudit('Create Student ID',id);render();toast('Permanent Student ID created securely');return}catch(e){toast(e.message||'Server registration failed');return}}
+    if(API_BASE){try{const created=await apiFetch('/register',{method:'POST',body:JSON.stringify({studentId:id,password,name,profile:{email,className,section,school,history}})});alert('Save this recovery code somewhere safe. It is required if you forget your password:\n\n'+created.recoveryCode);const l=await apiFetch('/login',{method:'POST',body:JSON.stringify({studentId:id,password})});localStorage.setItem('easywayServerToken',l.token);const existing=db.accounts.find(a=>a.id===id);if(existing)Object.assign(existing,{name,className,section,school,email,status:'Active',history});else db.accounts.push({id,name,className,section,school,email,status:'Active',createdAt:today(),history});state.currentId=id;localStorage.setItem('easywayCurrentStudent',id);localStorage.setItem('easywayLastId',id);state.modal=null;saveDb();await syncToServer();addAudit('Create Student ID',id);render();toast('Permanent Student ID created securely');return}catch(e){toast(e.message||'Server registration failed');return}}
     if(db.accounts.some(a=>a.id===id)){toast('That Student ID already exists');return}
     const acc={id,passwordHash:await hashPassword(password),name,className,section,school,email,status:'Active',createdAt:today(),history};
     db.accounts.push(acc);saveDb();state.currentId=id;localStorage.setItem('easywayCurrentStudent',id);localStorage.setItem('easywayLastId',id);state.modal=null;addAudit('Create Student ID',id);render();toast('Permanent Student ID created');
@@ -567,7 +567,9 @@
   function createSubject(){const name=(document.getElementById('newSubName')?.value||'').trim();const lang=document.getElementById('newSubLang')?.value||'English';if(!name){toast('Enter a subject name');return}if(db.subjects.some(x=>String(x.name||'').toLowerCase()===name.toLowerCase())){toast('Subject already exists');return}const id='SUB-'+Date.now();db.subjects.push({id,name,language:lang,books:[]});saveDb();addAudit('Create Subject',id);state.modal=null;toast('Subject created');render()}
   function createBook(){const sid=state.modal?.subjectId;const s=findSubjectBy(sid);const title=(document.getElementById('newBookTitle')?.value||'').trim();const cls=(document.getElementById('newBookClass')?.value||'').trim();if(!s){toast('Select a subject first');return}if(!title){toast('Enter a book title');return}const id='BOOK-'+Date.now();s.books.push({id,title,className:cls,chapters:[]});saveDb();addAudit('Create Book',id,`subject=${sid}`);state.modal=null;toast('Book created');render()}
   function editModal(){
+    if(!state.modal)return '';
     if(state.modal.type==='register')return registerModal();
+    if(state.modal.type==='forgot')return forgotModal();
     if(state.modal.type==='share')return shareModal();
     if(state.modal.type==='newSubject')return `<div class="modal-backdrop"><div class="modal"><div class="row between"><h2 class="section-title">Create Subject</h2><button class="btn ghost" onclick="window.closeModal();return false" type="button">Close</button></div><div class="field"><label>SUBJECT NAME</label><input id="newSubName" type="text" inputmode="text" autocomplete="off" placeholder="Example: Physics" /></div><div class="field"><label>LANGUAGE</label><select id="newSubLang"><option>English</option><option>Hindi</option></select></div><button class="btn primary" onclick="createSubject()">Create Subject</button></div></div>`;
     if(state.modal.type==='newBook')return `<div class="modal-backdrop"><div class="modal"><div class="row between"><h2 class="section-title">Create Book</h2><button class="btn ghost" onclick="window.closeModal();return false" type="button">Close</button></div><div class="field"><label>BOOK TITLE</label><input id="newBookTitle" type="text" inputmode="text" autocomplete="off" placeholder="Example: Physics — Class 11" /></div><div class="field"><label>CLASS</label><input id="newBookClass" type="text" inputmode="numeric" autocomplete="off" placeholder="11" /></div><button class="btn primary" onclick="createBook()">Create Book</button></div></div>`;
@@ -707,7 +709,26 @@
   document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')usageTick()});
 
   async function render(){
-    if(!current()){login();return}
+    // Logged-out actions (Create Permanent ID / Forgot Password) need a modal.
+    // Do not return immediately after rendering the login shell; mount the modal too.
+    if(!current()){
+      login();
+      let root=document.getElementById('easyway-modal-root');
+      if(state.modal){
+        if(!root){root=document.createElement('div');root.id='easyway-modal-root';document.body.appendChild(root);}
+        root.innerHTML=editModal();
+        root.hidden=false;
+        document.body.classList.add('easyway-modal-open');
+        const first=root.querySelector('input, textarea, select');
+        if(first && (state.modal.type==='register'||state.modal.type==='forgot')){
+          requestAnimationFrame(()=>{try{first.focus({preventScroll:true})}catch{first.focus()}});
+        }
+      }else{
+        if(root)root.remove();
+        document.body.classList.remove('easyway-modal-open');
+      }
+      return;
+    }
     let body='';
     if(state.page==='dashboard')body=dashboard();
     else if(state.page==='library')body=library();
