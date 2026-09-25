@@ -1,4 +1,1 @@
-Easyway Learn V73
-Definitive Permanent Student ID creation fix.
-Root cause fixed: openRegister/openForgot were assigning a string to state.modal while render/editModal expect an object with .type. Registration and password-recovery modals now use {type:'register'} / {type:'forgot'}.
-Existing OCR, student-only, demo removal, persistence, learning and scoring features are preserved.
+V76: Hindi/English speech language is selected from the actual paragraph/test content; Hindi tests use hi-IN. Latest underline marks only correctly spoken expected words; missing words remain un-underlined. Previous attempts remain stored. OCR pipeline retained from V75.

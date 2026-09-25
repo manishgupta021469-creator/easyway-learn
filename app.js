@@ -303,7 +303,14 @@
   function toggleSpeakingMic(){state.speakingListening?stopRecognition():startRecognition('speaking')}
   async function submitSpeakingTest(){const p=findParagraph();const text=(document.getElementById('speechText')?.value||'').trim();if(!text){toast('Speak or enter an answer first');return}state.speakingTranscript=text;let score=wordAccuracy(p.text,text);let metrics=null;try{const a=await serverAssessment('Speaking',p.id,text);score=a.score;metrics=a.metrics||null}catch{}state.speakingScore=score;stopAntiCheat();const pr=getProg(p.id);pr.speakingAttempts.push({score,date:new Date().toISOString(),recognizedText:text,metrics,underline:buildUnderline(p.text,text)});pr.latestScore=score;pr.highScore=Math.max(pr.highScore,score);pr.underline=buildUnderline(p.text,text);pr.lastType='Speaking Test';setProg(p.id,pr);db.history.unshift({id:'H-'+Date.now(),studentId:state.currentId,content:p.title,type:'Speaking Test',score:Math.round(p.maxScore*score/100),max:p.maxScore,date:new Date().toISOString(),paragraphId:p.id});saveDb();addAudit('Speaking Test',p.id,`${Math.round(score)}%`);state.page='result';render()}
   function result(){const p=findParagraph();const pr=getProg(p.id);const latest=pr.speakingAttempts[pr.speakingAttempts.length-1];return layout(`<div class="center"><div class="eyebrow">RESULT</div><h1 class="title">${esc(p.title)}</h1><div class="big-score">${Math.round((p.maxScore*(latest?.score||0)/100))}/${p.maxScore}</div><div class="muted">${Math.round(latest?.score||0)}% • Attempt ${pr.speakingAttempts.length}</div>${latest?.metrics?`<div class="small muted" style="margin-top:8px">Correct words: ${latest.metrics.correctWords}/${latest.metrics.expectedWords} • Missing: ${latest.metrics.missingWords} • Extra: ${latest.metrics.extraWords} • Sequence: ${latest.metrics.sequenceAccuracy}%</div>`:''}</div><div class="grid g3" style="margin-top:16px"><div class="card stat"><div class="small muted">Latest Score</div><div class="num">${Math.round(latest?.score||0)}%</div></div><div class="card stat"><div class="small muted">High Score</div><div class="num">${Math.round(pr.highScore)}%</div></div><div class="card stat"><div class="small muted">Max Marks</div><div class="num">${p.maxScore}</div></div></div><div class="card" style="margin-top:16px"><h2 class="section-title">Latest Underline Snapshot</h2><div class="paragraph">${pr.underline||buildUnderline(p.text,state.speakingTranscript)}</div><div class="toolbar" style="margin-top:14px"><button class="btn primary" onclick="openLesson('${p.id}')">Retest</button><button class="btn secondary" onclick="openChapter('${findChapter().id}')">Back to Chapter</button><button class="btn ghost" onclick="go('history')">History</button></div></div>`, activeNav());}
-  function buildUnderline(expected,got){const gt=normalizeTokens(got);const counts={};gt.forEach(w=>counts[w]=(counts[w]||0)+1);return normalizeTokens(expected).map(w=>{if(counts[w]){counts[w]--;return `<span class="word correct">${esc(w)}</span>`}return `<span class="word miss">${esc(w)}</span>`}).join(' ')}
+  function buildUnderline(expected,got){
+    const gt=normalizeTokens(got), counts={};
+    gt.forEach(w=>counts[w]=(counts[w]||0)+1);
+    return normalizeTokens(expected).map(w=>{
+      if(counts[w]){counts[w]--;return `<span class="word correct">${esc(w)}</span>`}
+      return `<span class="word missing">${esc(w)}</span>`;
+    }).join(' ')
+  }
   function normalizeTokens(t){return String(t||'').toLowerCase().normalize('NFKC').replace(/[^\p{L}\p{N}\s]/gu,' ').trim().split(/\s+/).filter(Boolean)}
   function wordAccuracy(expected,got){const e=normalizeTokens(expected),g=normalizeTokens(got);if(!e.length)return 0;const counts={};g.forEach(w=>counts[w]=(counts[w]||0)+1);let hit=0;e.forEach(w=>{if(counts[w]){counts[w]--;hit++}});return Math.round(hit/e.length*100)}
 
@@ -603,6 +610,15 @@
     else if(mode==='qa-answer'){const el=document.getElementById('qaAnswer');if(el)el.value=clean;}
   }
   function normalizeSpeechText(v){return String(v||'').toLowerCase().normalize('NFKC').replace(/[.,!?;:।॥]+/g,' ').replace(/\s+/g,' ').trim();}
+  function detectSpeechLanguage(text){
+    const v=String(text||'');
+    const hi=(v.match(/[\u0900-\u097F]/g)||[]).length;
+    const en=(v.match(/[A-Za-z]/g)||[]).length;
+    if(hi>=2 && hi>=en*0.25)return 'hi-IN';
+    if(en>=2 && en>=hi*2)return 'en-IN';
+    const subj=findSubject();
+    return subj?.language==='Hindi'?'hi-IN':'en-IN';
+  }
   function appendSpeechUnique(existing,incoming){
     const a=String(existing||'').trim(), b=String(incoming||'').trim();
     if(!b)return a;
@@ -630,8 +646,17 @@
     const launch=()=>{
       if(!state.speechWanted||runId!==recognitionRunId)return;
       const r=new SR();
-      const subj=findSubject();
-      state.speakingLang=(subj?.language==='Hindi'?'hi-IN':'en-IN');
+      const expectedText = (()=>{
+        try{
+          if(mode==='qualification'||mode==='speaking') return findParagraph()?.text||'';
+          if(mode==='chapter') return findChapter()?.paragraphs?.[state.chapterIndex]?.text||'';
+          if(mode==='qa-qualification'){const q=findChapter()?.qa?.[state.qaIndex];return q?`${q.question} ${q.answer}`:'';}
+          if(mode==='qa-answer'){const q=findChapter()?.qa?.[state.qaIndex];return q?.answer||'';}
+          if(mode==='formula') return findChapter()?.formulas?.find(x=>x.id===state.formulaId)?.formula||'';
+        }catch{}
+        return '';
+      })();
+      state.speakingLang=detectSpeechLanguage(expectedText);
       r.lang=state.speakingLang;
       r.interimResults=true;
       r.continuous=true;

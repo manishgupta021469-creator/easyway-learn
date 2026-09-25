@@ -26,7 +26,7 @@ const RATE_LIMIT = 120;
 const MAX_REQUEST_BYTES = 100_000_000;
 const MAX_AUDIO_BYTES = 15_000_000;
 const MAX_ANTICHEAT_BYTES = 1_500_000;
-const APP_VERSION = '0.70.0';
+const APP_VERSION = '0.76.0';
 const TRANSCRIBE_MODEL = process.env.OPENAI_TRANSCRIBE_MODEL || 'gpt-4o-mini-transcribe';
 const rateBuckets = new Map();
 
@@ -212,26 +212,46 @@ function normalizeOCRLanguage(lang){
 function installedTesseractLanguages(){
   try{return execFileSync('tesseract',['--list-langs'],{timeout:5000}).toString('utf8').split(/\r?\n/).map(x=>x.trim()).filter(x=>x&&/^[A-Za-z0-9_]+$/.test(x));}catch{return []}
 }
-function ocrQuality(text){
+function ocrQuality(text, expectedMixed=true){
   const s=String(text||'');
   if(!s)return 0;
-  const chars=[...s].filter(ch=>/\p{L}|\p{N}/u.test(ch)).length;
+  const letters=[...s].filter(ch=>/\p{L}|\p{N}/u.test(ch)).length;
+  const devan=[...s].filter(ch=>/[\u0900-\u097F]/u.test(ch)).length;
+  const latin=[...s].filter(ch=>/[A-Za-z]/.test(ch)).length;
+  const words=s.split(/\s+/).filter(Boolean).length;
   const replacement=(s.match(/[�]/g)||[]).length;
-  return chars - replacement*20 + Math.min(s.length,500)*0.01;
+  // Prefer readable text and, on mixed pages, strongly prefer a result that
+  // preserves BOTH Devanagari and Latin scripts instead of selecting a longer
+  // single-language result.
+  let score=letters + Math.min(words,120)*0.5 - replacement*50;
+  if(expectedMixed){
+    if(devan>0) score += 300 + Math.min(devan,500)*0.4;
+    if(latin>0) score += 300 + Math.min(latin,500)*0.2;
+    if(devan>0 && latin>0) score += 1000;
+  }
+  return score;
+}
+function ocrScriptStats(text){
+  const s=String(text||'');
+  return {
+    devan:[...s].filter(ch=>/[\u0900-\u097F]/u.test(ch)).length,
+    latin:[...s].filter(ch=>/[A-Za-z]/.test(ch)).length
+  };
 }
 async function runOCR(raw,mime,lang){
-  let safeLang=normalizeOCRLanguage(lang);
+  let safeLang=normalizeOCRLanguage(lang||'eng+hin');
   const available=installedTesseractLanguages();
+  if(!available.length) throw new Error('Tesseract is not installed on the server');
+  // The app always asks for bilingual OCR. If either model is installed,
+  // preserve it; when both are present, eng+hin is the primary mixed-language model.
   const requested=safeLang.split('+').filter(Boolean);
   const usable=requested.filter(x=>available.includes(x));
-  safeLang=usable.length?usable.join('+'):(available.includes('eng')?'eng':(available[0]||'eng'));
-  if(!available.length) throw new Error('Tesseract is not installed on the server');
+  if(available.includes('eng') && available.includes('hin')) safeLang='eng+hin';
+  else safeLang=usable.length?usable.join('+'):(available.includes('eng')?'eng':(available[0]||'eng'));
   const work=fs.mkdtempSync(path.join(os.tmpdir(),'easyway-ocr-'));
   const input=path.join(work,mime==='application/pdf'?'input.pdf':'input');
   try{
     fs.writeFileSync(input,raw);
-    // Text PDFs should not be OCRed at all. Extract their embedded text first;
-    // this is faster, more accurate, and avoids Render request timeouts on long books.
     if(mime==='application/pdf'){
       try{
         const extracted=execFileSync('pdftotext',['-layout',input,'-'],{timeout:60000,maxBuffer:20_000_000}).toString('utf8').trim();
@@ -244,18 +264,31 @@ async function runOCR(raw,mime,lang){
     let images=[];
     if(mime==='application/pdf'){
       const prefix=path.join(work,'page');
-      execFileSync('pdftoppm',['-png','-r','160',input,prefix],{timeout:120000});
+      execFileSync('pdftoppm',['-png','-r','200',input,prefix],{timeout:120000});
       images=fs.readdirSync(work).filter(x=>/^page-\d+\.png$/.test(x)).sort((a,b)=>Number(a.match(/\d+/)[0])-Number(b.match(/\d+/)[0])).map(x=>path.join(work,x));
       if(!images.length)throw new Error('PDF could not be converted to images');
     }else images=[input];
     const textParts=[];
+    // eng+hin is always tested first. Single-language passes are only fallbacks;
+    // they are never allowed to replace a mixed result that contains both scripts.
+    const candidates=[safeLang];
+    if(available.includes('eng') && available.includes('hin')) candidates.push('hin','eng');
+    const uniqueCandidates=[...new Set(candidates.filter(Boolean))];
     for(const image of images){
-      let out='';
-      try{out=execFileSync('tesseract',[image,'stdout','-l',safeLang,'--oem','1','--psm','6'],{timeout:45000,maxBuffer:6_000_000}).toString('utf8').trim()}catch{}
-      if(!out){
-        try{out=execFileSync('tesseract',[image,'stdout','-l',safeLang,'--oem','1','--psm','11'],{timeout:45000,maxBuffer:6_000_000}).toString('utf8').trim()}catch{}
+      const results=[];
+      for(const candidate of uniqueCandidates){
+        for(const psm of [6,11,3]){
+          try{
+            const out=execFileSync('tesseract',[image,'stdout','-l',candidate,'--oem','1','--psm',String(psm)],{timeout:60000,maxBuffer:12_000_000}).toString('utf8').trim();
+            if(out) results.push({text:out,quality:ocrQuality(out,true),candidate,psm,stats:ocrScriptStats(out)});
+          }catch{}
+        }
       }
-      if(out)textParts.push(out);
+      // Mixed-language result wins whenever it contains both scripts. Otherwise
+      // choose the highest-quality readable result.
+      const mixed=results.filter(r=>r.stats.devan>0 && r.stats.latin>0).sort((a,b)=>b.quality-a.quality);
+      const best=mixed[0] || results.sort((a,b)=>b.quality-a.quality)[0];
+      if(best?.text) textParts.push(best.text);
     }
     const text=textParts.join('\n\n').trim();
     if(!text)throw new Error(`OCR returned no readable text (languages: ${safeLang}; pages: ${images.length})`);
