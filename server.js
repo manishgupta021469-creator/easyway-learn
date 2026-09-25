@@ -19,14 +19,14 @@ const USE_SQLITE = process.env.EASYWAY_DB !== 'json' && !!DatabaseSync;
 const ASSET_DIR = path.join(DATA_DIR, 'assets');
 const SESSION_TTL_MS = 1000 * 60 * 60 * 12;
 const sessions = new Map();
-const MAX_JSON_BYTES = 48_000_000;
+const MAX_JSON_BYTES = 120_000_000;
 const MAX_ASSET_BYTES = 30_000_000;
 const RATE_WINDOW_MS = 60_000;
 const RATE_LIMIT = 120;
-const MAX_REQUEST_BYTES = 32_000_000;
+const MAX_REQUEST_BYTES = 100_000_000;
 const MAX_AUDIO_BYTES = 15_000_000;
 const MAX_ANTICHEAT_BYTES = 1_500_000;
-const APP_VERSION = '0.66.0';
+const APP_VERSION = '0.68.0';
 const TRANSCRIBE_MODEL = process.env.OPENAI_TRANSCRIBE_MODEL || 'gpt-4o-mini-transcribe';
 const rateBuckets = new Map();
 
@@ -224,24 +224,32 @@ async function runOCR(raw,mime,lang){
   const input=path.join(work,mime==='application/pdf'?'input.pdf':'input');
   try{
     fs.writeFileSync(input,raw);
+    // Text PDFs should not be OCRed at all. Extract their embedded text first;
+    // this is faster, more accurate, and avoids Render request timeouts on long books.
+    if(mime==='application/pdf'){
+      try{
+        const extracted=execFileSync('pdftotext',['-layout',input,'-'],{timeout:60000,maxBuffer:20_000_000}).toString('utf8').trim();
+        if(extracted.length>=40){
+          const paragraphs=splitParagraphs(extracted);
+          return {text:extracted,paragraphs,chapterDetection:chapterFromOCR(extracted),ocrLanguage:'embedded-text',pageCount:Math.max(1,(extracted.match(/\f/g)||[]).length+1)};
+        }
+      }catch{}
+    }
     let images=[];
     if(mime==='application/pdf'){
       const prefix=path.join(work,'page');
-      execFileSync('pdftoppm',['-png','-r','180',input,prefix],{timeout:90000});
+      execFileSync('pdftoppm',['-png','-r','160',input,prefix],{timeout:120000});
       images=fs.readdirSync(work).filter(x=>/^page-\d+\.png$/.test(x)).sort((a,b)=>Number(a.match(/\d+/)[0])-Number(b.match(/\d+/)[0])).map(x=>path.join(work,x));
       if(!images.length)throw new Error('PDF could not be converted to images');
     }else images=[input];
     const textParts=[];
     for(const image of images){
-      const candidates=[];
-      for(const psm of ['6','3','11']){
-        try{
-          const out=execFileSync('tesseract',[image,'stdout','-l',safeLang,'--oem','1','--psm',psm],{timeout:60000,maxBuffer:6_000_000}).toString('utf8').trim();
-          if(out)candidates.push(out);
-        }catch(e){ if(psm==='6'&&!candidates.length)throw e; }
+      let out='';
+      try{out=execFileSync('tesseract',[image,'stdout','-l',safeLang,'--oem','1','--psm','6'],{timeout:45000,maxBuffer:6_000_000}).toString('utf8').trim()}catch{}
+      if(!out){
+        try{out=execFileSync('tesseract',[image,'stdout','-l',safeLang,'--oem','1','--psm','11'],{timeout:45000,maxBuffer:6_000_000}).toString('utf8').trim()}catch{}
       }
-      const best=candidates.sort((a,b)=>ocrQuality(b)-ocrQuality(a))[0]||'';
-      if(best)textParts.push(best);
+      if(out)textParts.push(out);
     }
     const text=textParts.join('\n\n').trim();
     if(!text)throw new Error(`OCR returned no readable text (languages: ${safeLang}; pages: ${images.length})`);
@@ -249,7 +257,6 @@ async function runOCR(raw,mime,lang){
     return {text,paragraphs,chapterDetection:chapterFromOCR(text),ocrLanguage:safeLang,pageCount:images.length};
   } finally {try{fs.rmSync(work,{recursive:true,force:true})}catch{}}
 }
-
 function normalizeTokens(text){
   return String(text||'').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu,' ').split(/\s+/).filter(Boolean);
 }
@@ -374,7 +381,7 @@ async function handle(req,res) {
         if(!['image/jpeg','image/png','image/webp','application/pdf'].includes(mime)) throw new Error('OCR supports JPEG, PNG, WebP and PDF');
         if(!data) throw new Error('Image/PDF data required');
         const raw=Buffer.from(data,'base64'); if(!raw.length) throw new Error('Image/PDF data is invalid');
-        if(raw.length>MAX_ASSET_BYTES) throw new Error('OCR input exceeds 30MB');
+        if(raw.length>80_000_000) throw new Error('OCR input exceeds 80MB');
         return runOCR(raw,mime,lang);
       };
       if(url.pathname==='/api/ocr') {

@@ -1,18 +1,11 @@
-Easyway Learn V67 — OCR Definitive / Clean Root Package
+Easyway Learn V68 — OCR definitive PDF/image fix
 
-What was fixed in one pass:
-1. OCR routes are defined only once, before authentication. The old duplicate authenticated /api/ocr and /api/ocr-batch handlers were removed.
-2. Browser OCR upload uses a dedicated stateless fetch that does NOT attach the Student session token. Expired login cannot produce "Authentication required" for OCR.
-3. Added no-cache OCR requests and OPTIONS handling.
-4. OCR supports English + Hindi, image and PDF input, with Tesseract PSM 6/3/11 candidates.
-5. PDF pages are rendered page-by-page with Poppler.
-6. OCR chapter and paragraph detection remains enabled.
-7. Raised bounded OCR request/file limits for real textbook PDFs.
-8. Clean deployment package: no database files, WAL/SHM, PID or server logs are included.
-9. Service-worker cache bumped to v67.
-10. Docker installs Tesseract English/Hindi and Poppler without the failing fonts-deva-core package.
+1. PDF upload now tries pdftotext first. Text-based PDFs are extracted directly instead of being rendered/OCRed.
+2. Scanned PDFs fall back to page-by-page Tesseract OCR with fast PSM 6 and PSM 11 passes.
+3. Long PDFs no longer run three OCR passes per page, reducing Render timeouts.
+4. OCR remains session-independent; saving page data remains authenticated.
+5. JSON/request limits increased for ordinary textbook PDFs sent as base64.
+6. Hindi/English Tesseract and Poppler remain installed by Dockerfile.
+7. Service worker cache bumped to V68.
 
-IMPORTANT:
-Copy these files directly into the Render-connected repository ROOT (not inside a v67pkg folder), then commit all files together.
-
-Verification endpoint after deploy: open /api/ocr-status on the same Render URL. It should return ok:true and show eng:true, hin:true.
+Validation: node syntax checks, direct unauthenticated image OCR, embedded-text PDF extraction, scanned-PDF OCR and ZIP integrity.
