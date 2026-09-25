@@ -1,9 +1,4 @@
-Easyway Learn V72 — Permanent Student ID button definitive fix
-
-1. Fixed the missing register modal branch: openRegister() previously set state.modal='register', but editModal() had no register case, so the modal root rendered empty and the Create Permanent ID flow appeared not to work.
-2. The registration modal now renders correctly with Student ID, name, password, class, section, school and optional email fields.
-3. Added a mobile-safe delegated click fallback for the Create Permanent ID button.
-4. Existing OCR, document upload, student data persistence, scores/history/progress and other learning features are retained.
-5. Demo material removal remains unchanged.
-
-Permanent ID root cause fixed in V72: render() previously returned immediately to the login shell whenever no student was logged in, so state.modal='register' was never mounted. V72 renders the logged-out modal after the login shell and explicitly supports the forgot-password modal too.
+Easyway Learn V73
+Definitive Permanent Student ID creation fix.
+Root cause fixed: openRegister/openForgot were assigning a string to state.modal while render/editModal expect an object with .type. Registration and password-recovery modals now use {type:'register'} / {type:'forgot'}.
+Existing OCR, student-only, demo removal, persistence, learning and scoring features are preserved.
