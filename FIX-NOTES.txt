@@ -1,25 +1,19 @@
-Easyway Learn V64 — all-in-one final fix (2026-09-25)
+Easyway Learn V65 — OCR Authentication + PDF Preview Final Fix
 
-1. CREATE SUBJECT / CREATE BOOK
-   - Replaced the fragile custom name-entry modal with native mobile/desktop prompt dialogs for subject/book names.
-   - Existing modal Close/Cancel/Go Back buttons remain direct and do not depend on delegated handlers.
+1. OCR AUTHENTICATION FIX
+   - /api/ocr and /api/ocr-batch are now stateless document-processing endpoints and no longer fail with “Authentication required” when a browser has an expired/stale learning-session token.
+   - Student data APIs and page-asset saving remain authenticated.
+   - Existing per-IP request rate limiting remains active.
 
-2. READING / SPEAKING MIC
-   - Speech recognition now launches a fresh recognition session after browser silence/end instead of restarting the same recognition object.
-   - The transcript is retained between sessions and overlap-aware merging prevents one spoken line from being appended repeatedly.
-   - Manual Stop cancels all restart timers and prevents automatic restart.
-   - Reading qualification and Speaking retests remain separate; Read This Paragraph Again stays available after an unlock.
+2. OCR
+   - Hindi + English OCR remains supported through Tesseract.
+   - PDF pages are processed page-by-page with Poppler + Tesseract.
+   - Chapter detection and paragraph extraction remain enabled.
 
-3. PAGE UPLOAD / OCR
-   - Fixed the missing frontend ocrMime() helper that previously caused file OCR to fail before the request reached the server.
-   - JPEG/PNG/WebP/PDF MIME is inferred from both browser type and filename.
-   - OCR requests use eng+hin; the server normalizes language aliases and only uses languages installed in the image.
-   - PDF files are converted and OCRed page-by-page with Poppler + Tesseract.
-   - OCR chapter heading detection and paragraph splitting are more tolerant, and successful OCR always supplies paragraph blocks for saving.
+3. PDF PAGE PREVIEW
+   - CSP now explicitly permits blob: PDF iframe previews, fixing “This content is blocked” for locally stored PDF pages.
 
-4. CACHE
-   - Service worker is v64 and network-first for the application shell.
-   - /healthz is provided for Render health checks.
-   - The app unregisters previous workers and clears old Cache Storage once, preventing an old JavaScript/CSS release from masking the fix.
-
-Deploy all root files together: app.js, server.js, styles.css, sw.js, Dockerfile, index.html, FIX-NOTES.txt.
+4. VALIDATION
+   - app.js/server.js syntax checked.
+   - Unauthenticated POST /api/ocr tested locally: HTTP 200, OCR text returned, chapter heading detected, paragraph returned.
+   - ZIP integrity checked.

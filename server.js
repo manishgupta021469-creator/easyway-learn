@@ -107,7 +107,7 @@ function securityHeaders(res) {
   res.setHeader('cross-origin-opener-policy','same-origin');
   res.setHeader('cross-origin-resource-policy','same-origin');
   res.setHeader('permissions-policy','camera=(self), microphone=(self), geolocation=()');
-  res.setHeader('content-security-policy', "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'");
+  res.setHeader('content-security-policy', "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-src 'self' blob:; frame-ancestors 'none'");
   if (process.env.NODE_ENV === 'production') res.setHeader('strict-transport-security','max-age=31536000; includeSubDomains');
 }
 function json(res, status, body) {
@@ -354,6 +354,48 @@ async function handle(req,res) {
       const t=token(); saveSession(t,id,Date.now()+SESSION_TTL_MS); audit(s,'Login'); writeStore(store);
       return json(res,200,{token:t,studentId:id,expiresAt:Date.now()+SESSION_TTL_MS});
     }
+
+    // OCR is a stateless document-processing operation. It must remain usable when a
+    // browser has a stale/expired learning-session token. Content saving and all
+    // student data APIs below still require authentication. A per-IP rate limit is
+    // already applied at the top of this handler.
+    if (req.method==='POST' && (url.pathname==='/api/ocr' || url.pathname==='/api/ocr-batch')) {
+      if (req.headers['content-type'] && !req.headers['content-type'].toLowerCase().startsWith('application/json')) return json(res,415,{error:'JSON content required'});
+      const b=await body(req);
+      const processOne=async (it, index, lang)=>{
+        const mime=String(it?.mime||''); const data=String(it?.data||'');
+        if(!['image/jpeg','image/png','image/webp','application/pdf'].includes(mime)) throw new Error('OCR supports JPEG, PNG, WebP and PDF');
+        if(!data) throw new Error('Image/PDF data required');
+        const raw=Buffer.from(data,'base64'); if(!raw.length) throw new Error('Image/PDF data is invalid');
+        if(raw.length>MAX_ASSET_BYTES) throw new Error('OCR input exceeds 10MB');
+        return runOCR(raw,mime,lang);
+      };
+      if(url.pathname==='/api/ocr') {
+        try {
+          const r=await processOne(b,0,String(b.lang||'eng'));
+          return json(res,200,{ok:true,...r,paragraphs:r.paragraphs.map((text,i)=>({id:`OCR-${i+1}`,title:`Detected Paragraph ${i+1}`,text}))});
+        } catch(e) {
+          return json(res,422,{error:`OCR processing failed: ${e.message||'unknown OCR error'}`});
+        }
+      }
+      const items=Array.isArray(b.items)?b.items:[]; const lang=String(b.lang||'eng');
+      if(!items.length) return json(res,400,{error:'At least one OCR item is required'});
+      if(items.length>20) return json(res,413,{error:'OCR batch is limited to 20 pages'});
+      const results=[];
+      for(let i=0;i<items.length;i++) {
+        const it=items[i]||{};
+        try {
+          const r=await processOne(it,i,lang);
+          results.push({index:i,name:String(it.name||`page-${i+1}`),ok:true,text:r.text,paragraphs:r.paragraphs.map((text,n)=>({id:`OCR-${i+1}-${n+1}`,title:`Detected Paragraph ${n+1}`,text})),chapterDetection:r.chapterDetection,ocrLanguage:r.ocrLanguage,pageCount:r.pageCount});
+        } catch(e) {
+          results.push({index:i,name:String(it.name||`page-${i+1}`),ok:false,error:`OCR processing failed: ${e.message||'unknown OCR error'}`});
+        }
+      }
+      const chapterMap=new Map();
+      for(const r of results.filter(x=>x.ok)){const key=r.chapterDetection.number?`chapter-${r.chapterDetection.number}`:`fallback-${r.index}`;const g=chapterMap.get(key)||{key,title:r.chapterDetection.title,order:r.chapterDetection.number||null,confidence:r.chapterDetection.confidence,pages:[]};g.pages.push(r.index);chapterMap.set(key,g);}
+      return json(res,200,{ok:true,results,groups:[...chapterMap.values()]});
+    }
+
     const me=auth(req);
     if (!me) return json(res,401,{error:'Authentication required'});
     const student=store.students[me.studentId]; if (!student) return json(res,401,{error:'Student account not found'});
