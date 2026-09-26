@@ -1,1 +1,1 @@
-V76: Hindi/English speech language is selected from the actual paragraph/test content; Hindi tests use hi-IN. Latest underline marks only correctly spoken expected words; missing words remain un-underlined. Previous attempts remain stored. OCR pipeline retained from V75.
+V77 OCR: restores V73 English reliability while supporting robust per-page Hindi + English mixed OCR. Text PDFs use UTF-8 pdftotext. Scanned PDFs/images run eng+hin plus Hindi/English fallbacks and choose by the scripts actually detected on each page.

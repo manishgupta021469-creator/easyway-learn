@@ -26,7 +26,7 @@ const RATE_LIMIT = 120;
 const MAX_REQUEST_BYTES = 100_000_000;
 const MAX_AUDIO_BYTES = 15_000_000;
 const MAX_ANTICHEAT_BYTES = 1_500_000;
-const APP_VERSION = '0.76.0';
+const APP_VERSION = '0.77.0';
 const TRANSCRIBE_MODEL = process.env.OPENAI_TRANSCRIBE_MODEL || 'gpt-4o-mini-transcribe';
 const rateBuckets = new Map();
 
@@ -212,88 +212,78 @@ function normalizeOCRLanguage(lang){
 function installedTesseractLanguages(){
   try{return execFileSync('tesseract',['--list-langs'],{timeout:5000}).toString('utf8').split(/\r?\n/).map(x=>x.trim()).filter(x=>x&&/^[A-Za-z0-9_]+$/.test(x));}catch{return []}
 }
-function ocrQuality(text, expectedMixed=true){
-  const s=String(text||'');
-  if(!s)return 0;
-  const letters=[...s].filter(ch=>/\p{L}|\p{N}/u.test(ch)).length;
-  const devan=[...s].filter(ch=>/[\u0900-\u097F]/u.test(ch)).length;
-  const latin=[...s].filter(ch=>/[A-Za-z]/.test(ch)).length;
-  const words=s.split(/\s+/).filter(Boolean).length;
-  const replacement=(s.match(/[�]/g)||[]).length;
-  // Prefer readable text and, on mixed pages, strongly prefer a result that
-  // preserves BOTH Devanagari and Latin scripts instead of selecting a longer
-  // single-language result.
-  let score=letters + Math.min(words,120)*0.5 - replacement*50;
-  if(expectedMixed){
-    if(devan>0) score += 300 + Math.min(devan,500)*0.4;
-    if(latin>0) score += 300 + Math.min(latin,500)*0.2;
-    if(devan>0 && latin>0) score += 1000;
-  }
-  return score;
-}
-function ocrScriptStats(text){
+function scriptStats(text){
   const s=String(text||'');
   return {
     devan:[...s].filter(ch=>/[\u0900-\u097F]/u.test(ch)).length,
-    latin:[...s].filter(ch=>/[A-Za-z]/.test(ch)).length
+    latin:[...s].filter(ch=>/[A-Za-z]/.test(ch)).length,
+    words:s.split(/\s+/).filter(Boolean).length,
+    chars:[...s].filter(ch=>/\p{L}|\p{N}/u.test(ch)).length,
+    replacement:(s.match(/[�]/g)||[]).length
   };
 }
+function ocrQuality(text,mode='mixed'){
+  const st=scriptStats(text); if(!st.chars)return -1e9;
+  let score=st.chars + Math.min(st.words,160)*0.4 - st.replacement*100;
+  if(mode==='hindi') score += st.devan*3 - st.latin*0.2;
+  else if(mode==='english') score += st.latin*2 - st.devan*0.5;
+  else if(st.devan>0 && st.latin>0) score += 900 + Math.min(st.devan,800)*0.5 + Math.min(st.latin,1200)*0.1;
+  return score;
+}
+function runTesseractCandidate(image,candidate,psm){
+  try{return execFileSync('tesseract',[image,'stdout','-l',candidate,'--oem','1','--psm',String(psm)],{timeout:60000,maxBuffer:12_000_000}).toString('utf8').trim()}catch{return ''}
+}
 async function runOCR(raw,mime,lang){
-  let safeLang=normalizeOCRLanguage(lang||'eng+hin');
   const available=installedTesseractLanguages();
   if(!available.length) throw new Error('Tesseract is not installed on the server');
-  // The app always asks for bilingual OCR. If either model is installed,
-  // preserve it; when both are present, eng+hin is the primary mixed-language model.
-  const requested=safeLang.split('+').filter(Boolean);
-  const usable=requested.filter(x=>available.includes(x));
-  if(available.includes('eng') && available.includes('hin')) safeLang='eng+hin';
-  else safeLang=usable.length?usable.join('+'):(available.includes('eng')?'eng':(available[0]||'eng'));
+  const hasEng=available.includes('eng'), hasHin=available.includes('hin') || available.includes('Devanagari');
+  const mixedLang=hasEng && hasHin ? (available.includes('hin')?'eng+hin':'eng+Devanagari') : (hasEng?'eng':(hasHin?'hin':available[0]));
   const work=fs.mkdtempSync(path.join(os.tmpdir(),'easyway-ocr-'));
   const input=path.join(work,mime==='application/pdf'?'input.pdf':'input');
   try{
     fs.writeFileSync(input,raw);
     if(mime==='application/pdf'){
       try{
-        const extracted=execFileSync('pdftotext',['-layout',input,'-'],{timeout:60000,maxBuffer:20_000_000}).toString('utf8').trim();
+        const extracted=execFileSync('pdftotext',['-layout','-enc','UTF-8',input,'-'],{timeout:60000,maxBuffer:30_000_000}).toString('utf8').trim();
         if(extracted.length>=40){
-          const paragraphs=splitParagraphs(extracted);
-          return {text:extracted,paragraphs,chapterDetection:chapterFromOCR(extracted),ocrLanguage:'embedded-text',pageCount:Math.max(1,(extracted.match(/\f/g)||[]).length+1)};
+          const st=scriptStats(extracted);
+          return {text:extracted,paragraphs:splitParagraphs(extracted),chapterDetection:chapterFromOCR(extracted),ocrLanguage:st.devan&&st.latin?'embedded-text-eng+hin':(st.devan?'embedded-text-hin':'embedded-text-eng'),pageCount:Math.max(1,(extracted.match(/\f/g)||[]).length+1)};
         }
       }catch{}
     }
     let images=[];
     if(mime==='application/pdf'){
       const prefix=path.join(work,'page');
-      execFileSync('pdftoppm',['-png','-r','200',input,prefix],{timeout:120000});
+      execFileSync('pdftoppm',['-png','-r','200',input,prefix],{timeout:180000,maxBuffer:2_000_000});
       images=fs.readdirSync(work).filter(x=>/^page-\d+\.png$/.test(x)).sort((a,b)=>Number(a.match(/\d+/)[0])-Number(b.match(/\d+/)[0])).map(x=>path.join(work,x));
       if(!images.length)throw new Error('PDF could not be converted to images');
     }else images=[input];
     const textParts=[];
-    // eng+hin is always tested first. Single-language passes are only fallbacks;
-    // they are never allowed to replace a mixed result that contains both scripts.
-    const candidates=[safeLang];
-    if(available.includes('eng') && available.includes('hin')) candidates.push('hin','eng');
-    const uniqueCandidates=[...new Set(candidates.filter(Boolean))];
     for(const image of images){
       const results=[];
-      for(const candidate of uniqueCandidates){
-        for(const psm of [6,11,3]){
-          try{
-            const out=execFileSync('tesseract',[image,'stdout','-l',candidate,'--oem','1','--psm',String(psm)],{timeout:60000,maxBuffer:12_000_000}).toString('utf8').trim();
-            if(out) results.push({text:out,quality:ocrQuality(out,true),candidate,psm,stats:ocrScriptStats(out)});
-          }catch{}
-        }
+      const candidates=[mixedLang];
+      if(hasHin)candidates.push('hin');
+      if(hasEng)candidates.push('eng');
+      if(available.includes('Devanagari'))candidates.push('Devanagari');
+      for(const candidate of [...new Set(candidates)]) for(const psm of [6,11,3]){
+        const out=runTesseractCandidate(image,candidate,psm); if(!out)continue;
+        const st=scriptStats(out); const mode=st.devan>0&&st.latin>0?'mixed':(st.devan>0?'hindi':'english');
+        results.push({text:out,score:ocrQuality(out,mode),mode,st,candidate,psm});
       }
-      // Mixed-language result wins whenever it contains both scripts. Otherwise
-      // choose the highest-quality readable result.
-      const mixed=results.filter(r=>r.stats.devan>0 && r.stats.latin>0).sort((a,b)=>b.quality-a.quality);
-      const best=mixed[0] || results.sort((a,b)=>b.quality-a.quality)[0];
-      if(best?.text) textParts.push(best.text);
+      const mixed=results.filter(r=>r.st.devan>0&&r.st.latin>0).sort((a,b)=>b.score-a.score);
+      const hindi=results.filter(r=>r.st.devan>0).sort((a,b)=>b.score-a.score);
+      const english=results.filter(r=>r.st.latin>0).sort((a,b)=>b.score-a.score);
+      let best;
+      if(mixed.length) best=mixed[0];
+      else if(hindi.length && !english.length) best=hindi[0];
+      else if(english.length && !hindi.length) best=english[0];
+      else best=results.sort((a,b)=>b.score-a.score)[0];
+      if(best?.text)textParts.push(best.text);
     }
     const text=textParts.join('\n\n').trim();
-    if(!text)throw new Error(`OCR returned no readable text (languages: ${safeLang}; pages: ${images.length})`);
-    const paragraphs=splitParagraphs(text);
-    return {text,paragraphs,chapterDetection:chapterFromOCR(text),ocrLanguage:safeLang,pageCount:images.length};
+    if(!text)throw new Error(`OCR returned no readable text (languages: ${mixedLang}; pages: ${images.length})`);
+    const st=scriptStats(text);
+    return {text,paragraphs:splitParagraphs(text),chapterDetection:chapterFromOCR(text),ocrLanguage:st.devan&&st.latin?'eng+hin':(st.devan?'hin':'eng'),pageCount:images.length};
   } finally {try{fs.rmSync(work,{recursive:true,force:true})}catch{}}
 }
 function normalizeTokens(text){
