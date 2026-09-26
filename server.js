@@ -26,7 +26,7 @@ const RATE_LIMIT = 120;
 const MAX_REQUEST_BYTES = 100_000_000;
 const MAX_AUDIO_BYTES = 15_000_000;
 const MAX_ANTICHEAT_BYTES = 1_500_000;
-const APP_VERSION = '0.77.0';
+const APP_VERSION = '1.0.0-rebuild';
 const TRANSCRIBE_MODEL = process.env.OPENAI_TRANSCRIBE_MODEL || 'gpt-4o-mini-transcribe';
 const rateBuckets = new Map();
 
@@ -222,31 +222,58 @@ function scriptStats(text){
     replacement:(s.match(/[�]/g)||[]).length
   };
 }
-function ocrQuality(text,mode='mixed'){
-  const st=scriptStats(text); if(!st.chars)return -1e9;
-  let score=st.chars + Math.min(st.words,160)*0.4 - st.replacement*100;
-  if(mode==='hindi') score += st.devan*3 - st.latin*0.2;
-  else if(mode==='english') score += st.latin*2 - st.devan*0.5;
-  else if(st.devan>0 && st.latin>0) score += 900 + Math.min(st.devan,800)*0.5 + Math.min(st.latin,1200)*0.1;
+function safeExec(file,args,options={}){
+  return execFileSync(file,args,{timeout:options.timeout||60000,maxBuffer:options.maxBuffer||20_000_000});
+}
+function preprocessOCRImage(src,dir){
+  const out=path.join(dir,'normalized.png');
+  try{
+    safeExec('convert',[src,'-auto-orient','-colorspace','Gray','-resize','180%','-contrast-stretch','0x8%','-sharpen','0x1',out],{timeout:45000,maxBuffer:2_000_000});
+    if(fs.existsSync(out)&&fs.statSync(out).size>0)return out;
+  }catch{}
+  return src;
+}
+function candidateScore(text,requestedMode){
+  const st=scriptStats(text); if(!st.chars)return -1e12;
+  let score=st.chars + Math.min(st.words,220)*1.2 - st.replacement*300;
+  if(requestedMode==='hindi') score += st.devan*4 - st.latin*0.4;
+  else if(requestedMode==='english') score += st.latin*2.5 - st.devan*0.8;
+  else if(st.devan && st.latin) score += 1400 + Math.min(st.devan,1000)*0.8 + Math.min(st.latin,1500)*0.15;
   return score;
 }
 function runTesseractCandidate(image,candidate,psm){
-  try{return execFileSync('tesseract',[image,'stdout','-l',candidate,'--oem','1','--psm',String(psm)],{timeout:60000,maxBuffer:12_000_000}).toString('utf8').trim()}catch{return ''}
+  try{return safeExec('tesseract',[image,'stdout','-l',candidate,'--oem','1','--psm',String(psm),'-c','preserve_interword_spaces=1'],{timeout:70000,maxBuffer:16_000_000}).toString('utf8').trim();}catch{return ''}
+}
+function chooseOCR(results,requestedLang){
+  const req=String(requestedLang||'eng').toLowerCase();
+  const mode=(req.includes('eng')&&req.includes('hin'))||req.includes('+')?'mixed':(req.includes('hin')||req.includes('devanagari')||req==='hi'?'hindi':(req.includes('eng')?'english':'mixed'));
+  const mixed=results.filter(r=>r.st.devan>0&&r.st.latin>0).sort((a,b)=>b.score-a.score);
+  const hindi=results.filter(r=>r.st.devan>0).sort((a,b)=>b.score-a.score);
+  const english=results.filter(r=>r.st.latin>0).sort((a,b)=>b.score-a.score);
+  if(mode==='hindi' && hindi.length)return hindi[0];
+  if(mode==='english' && english.length)return english[0];
+  if(mixed.length)return mixed[0];
+  if(hindi.length && !english.length)return hindi[0];
+  if(english.length && !hindi.length)return english[0];
+  return results.sort((a,b)=>b.score-a.score)[0]||null;
 }
 async function runOCR(raw,mime,lang){
   const available=installedTesseractLanguages();
   if(!available.length) throw new Error('Tesseract is not installed on the server');
-  const hasEng=available.includes('eng'), hasHin=available.includes('hin') || available.includes('Devanagari');
-  const mixedLang=hasEng && hasHin ? (available.includes('hin')?'eng+hin':'eng+Devanagari') : (hasEng?'eng':(hasHin?'hin':available[0]));
-  const work=fs.mkdtempSync(path.join(os.tmpdir(),'easyway-ocr-'));
-  const input=path.join(work,mime==='application/pdf'?'input.pdf':'input');
+  const hasEng=available.includes('eng');
+  const hasHin=available.includes('hin') || available.includes('Devanagari');
+  const hinCode=available.includes('hin')?'hin':'Devanagari';
+  const mixedCode=hasEng&&hasHin?`eng+${hinCode}`:(hasEng?'eng':hinCode);
+  const requested=normalizeOCRLanguage(lang||mixedCode);
+  const work=fs.mkdtempSync(path.join(os.tmpdir(),'easyway-rebuild-ocr-'));
+  const input=path.join(work,mime==='application/pdf'?'input.pdf':'input.bin');
   try{
     fs.writeFileSync(input,raw);
     if(mime==='application/pdf'){
       try{
-        const extracted=execFileSync('pdftotext',['-layout','-enc','UTF-8',input,'-'],{timeout:60000,maxBuffer:30_000_000}).toString('utf8').trim();
-        if(extracted.length>=40){
-          const st=scriptStats(extracted);
+        const extracted=safeExec('pdftotext',['-layout','-enc','UTF-8',input,'-'],{timeout:90000,maxBuffer:40_000_000}).toString('utf8').trim();
+        const st=scriptStats(extracted);
+        if(st.chars>=25){
           return {text:extracted,paragraphs:splitParagraphs(extracted),chapterDetection:chapterFromOCR(extracted),ocrLanguage:st.devan&&st.latin?'embedded-text-eng+hin':(st.devan?'embedded-text-hin':'embedded-text-eng'),pageCount:Math.max(1,(extracted.match(/\f/g)||[]).length+1)};
         }
       }catch{}
@@ -254,38 +281,36 @@ async function runOCR(raw,mime,lang){
     let images=[];
     if(mime==='application/pdf'){
       const prefix=path.join(work,'page');
-      execFileSync('pdftoppm',['-png','-r','200',input,prefix],{timeout:180000,maxBuffer:2_000_000});
+      safeExec('pdftoppm',['-png','-r','240',input,prefix],{timeout:240000,maxBuffer:3_000_000});
       images=fs.readdirSync(work).filter(x=>/^page-\d+\.png$/.test(x)).sort((a,b)=>Number(a.match(/\d+/)[0])-Number(b.match(/\d+/)[0])).map(x=>path.join(work,x));
       if(!images.length)throw new Error('PDF could not be converted to images');
     }else images=[input];
-    const textParts=[];
-    for(const image of images){
-      const results=[];
-      const candidates=[mixedLang];
-      if(hasHin)candidates.push('hin');
+    const allParts=[];
+    for(const original of images){
+      const image=preprocessOCRImage(original,work);
+      const candidates=[];
+      if(hasEng&&hasHin)candidates.push(mixedCode);
+      if(hasHin)candidates.push(hinCode);
       if(hasEng)candidates.push('eng');
-      if(available.includes('Devanagari'))candidates.push('Devanagari');
-      for(const candidate of [...new Set(candidates)]) for(const psm of [6,11,3]){
-        const out=runTesseractCandidate(image,candidate,psm); if(!out)continue;
-        const st=scriptStats(out); const mode=st.devan>0&&st.latin>0?'mixed':(st.devan>0?'hindi':'english');
-        results.push({text:out,score:ocrQuality(out,mode),mode,st,candidate,psm});
+      const results=[];
+      for(const candidate of [...new Set(candidates)]){
+        for(const psm of [6,11,3]){
+          const out=runTesseractCandidate(image,candidate,psm); if(!out)continue;
+          const st=scriptStats(out);
+          const mode=st.devan&&st.latin?'mixed':(st.devan?'hindi':'english');
+          results.push({text:out,st,mode,candidate,psm,score:candidateScore(out,mode)});
+        }
       }
-      const mixed=results.filter(r=>r.st.devan>0&&r.st.latin>0).sort((a,b)=>b.score-a.score);
-      const hindi=results.filter(r=>r.st.devan>0).sort((a,b)=>b.score-a.score);
-      const english=results.filter(r=>r.st.latin>0).sort((a,b)=>b.score-a.score);
-      let best;
-      if(mixed.length) best=mixed[0];
-      else if(hindi.length && !english.length) best=hindi[0];
-      else if(english.length && !hindi.length) best=english[0];
-      else best=results.sort((a,b)=>b.score-a.score)[0];
-      if(best?.text)textParts.push(best.text);
+      const best=chooseOCR(results,requested);
+      if(best?.text)allParts.push(best.text);
     }
-    const text=textParts.join('\n\n').trim();
-    if(!text)throw new Error(`OCR returned no readable text (languages: ${mixedLang}; pages: ${images.length})`);
+    const text=allParts.join('\n\n').trim();
+    if(!text)throw new Error(`OCR returned no readable text (languages: ${available.filter(x=>x==='eng'||x==='hin'||x==='Devanagari').join(',')})`);
     const st=scriptStats(text);
     return {text,paragraphs:splitParagraphs(text),chapterDetection:chapterFromOCR(text),ocrLanguage:st.devan&&st.latin?'eng+hin':(st.devan?'hin':'eng'),pageCount:images.length};
-  } finally {try{fs.rmSync(work,{recursive:true,force:true})}catch{}}
+  }finally{try{fs.rmSync(work,{recursive:true,force:true});}catch{}}
 }
+
 function normalizeTokens(text){
   return String(text||'').toLowerCase().replace(/[^\p{L}\p{N}\s]/gu,' ').split(/\s+/).filter(Boolean);
 }

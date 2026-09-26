@@ -1,1 +1,8 @@
-V77 OCR: restores V73 English reliability while supporting robust per-page Hindi + English mixed OCR. Text PDFs use UTF-8 pdftotext. Scanned PDFs/images run eng+hin plus Hindi/English fallbacks and choose by the scripts actually detected on each page.
+Easyway Learn Clean Rebuild v1.0
+
+Rebuilt OCR pipeline instead of applying another small patch to the previous OCR selector.
+Added image normalization, multi-pass script-aware OCR, deterministic candidate scoring, and explicit OCR diagnostics.
+OCR routes are stateless and do not require Authorization.
+Reading/Speaking UI retains continuous recognition with explicit Start/Stop/Complete semantics.
+Missing words are rendered without underline; only recognized expected words receive the correct-word underline class.
+The package was syntax-checked, ZIP-tested, and exercised against local English/Hindi/mixed OCR samples.
